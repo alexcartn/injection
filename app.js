@@ -10,10 +10,15 @@ const fmtDose = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maxim
 const fmtCoef = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 4 });
 const fmtWeight = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
 
+const THEME_KEY = 'injection:theme';
+const THEME_COLOR = { light: '#ffffff', dark: '#162220' };
+
 const main = document.getElementById('main');
 const weightInput = document.getElementById('weight');
+const weightClear = document.getElementById('weight-clear');
 const warn = document.getElementById('warn');
 const editToggle = document.getElementById('edit-toggle');
+const themeToggle = document.getElementById('theme-toggle');
 
 // --- stockage (le poids n'est volontairement jamais mémorisé) ---------------
 
@@ -274,7 +279,7 @@ function resetAll() {
 function setEditing(on) {
   state.editing = on;
   document.body.classList.toggle('editing', on);
-  editToggle.textContent = on ? 'Terminé' : 'Modifier les doses';
+  editToggle.textContent = on ? 'Terminé' : 'Modifier';
   render();
   window.scrollTo({ top: 0 });
 }
@@ -288,6 +293,7 @@ function updateWeight() {
 
   const invalid = text.trim() !== '' && !state.weight;
   weightInput.setAttribute('aria-invalid', String(invalid));
+  weightClear.hidden = text === '';
 
   let message = '';
   if (invalid) message = 'Poids invalide.';
@@ -300,6 +306,33 @@ function updateWeight() {
 
 weightInput.addEventListener('input', updateWeight);
 weightInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') weightInput.blur(); });
+
+// Efface le poids du patient précédent et remet le curseur dans le champ.
+weightClear.addEventListener('click', () => {
+  weightInput.value = '';
+  updateWeight();
+  weightInput.focus();
+});
+// Toute la boîte "Poids" est cliquable, pas seulement la zone de saisie.
+document.querySelector('.weight').addEventListener('click', (e) => {
+  if (!weightClear.contains(e.target)) weightInput.focus();
+});
+
+// --- thème : clair par défaut, sombre au choix (mémorisé) -------------------
+
+function applyTheme(theme) {
+  if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
+  else delete document.documentElement.dataset.theme;
+  themeToggle.setAttribute('aria-pressed', String(theme === 'dark'));
+  document.querySelector('meta[name="theme-color"]').content = THEME_COLOR[theme];
+}
+
+themeToggle.addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  storeSet(THEME_KEY, next);
+});
+applyTheme(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
 
 document.querySelectorAll('input[name="species"]').forEach((radio) => {
   radio.checked = radio.value === state.species;

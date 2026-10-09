@@ -1,5 +1,6 @@
+/* Thème clair par défaut. Le mode sombre s'active avec data-theme="dark" sur <html>. */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --bg: #f3f6f5;
   --surface: #ffffff;
   --text: #14221e;
@@ -16,28 +17,31 @@
   --cn-ink: #1e3a8a;
   --ct-bg: #fde4cf;
   --ct-ink: #7c2d12;
+  --shadow: rgba(15, 60, 52, 0.08);
   --radius: 14px;
+  --gutter-l: max(16px, env(safe-area-inset-left), calc((100% - 1100px) / 2));
+  --gutter-r: max(16px, env(safe-area-inset-right), calc((100% - 1100px) / 2));
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1513;
-    --surface: #162220;
-    --text: #e7f1ee;
-    --muted: #9bb0aa;
-    --line: #28403b;
-    --accent: #2dd4bf;
-    --accent-strong: #5eead4;
-    --accent-soft: #123a35;
-    --on-accent: #032420;
-    --danger: #ff8a80;
-    --warn-bg: #3d2c07;
-    --warn-ink: #ffd98a;
-    --cn-bg: #1e3a5f;
-    --cn-ink: #bfdbfe;
-    --ct-bg: #5a2e14;
-    --ct-ink: #fed7aa;
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d1513;
+  --surface: #162220;
+  --text: #e7f1ee;
+  --muted: #9bb0aa;
+  --line: #28403b;
+  --accent: #2dd4bf;
+  --accent-strong: #5eead4;
+  --accent-soft: #123a35;
+  --on-accent: #032420;
+  --danger: #ff8a80;
+  --warn-bg: #3d2c07;
+  --warn-ink: #ffd98a;
+  --cn-bg: #1e3a5f;
+  --cn-ink: #bfdbfe;
+  --ct-bg: #5a2e14;
+  --ct-ink: #fed7aa;
+  --shadow: transparent;
 }
 
 * { box-sizing: border-box; }
@@ -62,29 +66,15 @@ body {
   white-space: nowrap;
 }
 
-/* --- en-tête : poids et filtre espèce, toujours visibles ----------------- */
+/* --- en-tête : titre et actions, défile avec la page ---------------------- */
 
 .top {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  padding: calc(10px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left));
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-}
-
-.top-row,
-.controls,
-.warn {
-  max-width: 1100px;
-  margin-inline: auto;
-}
-
-.top-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  padding: calc(10px + env(safe-area-inset-top)) var(--gutter-r) 8px var(--gutter-l);
+  background: var(--surface);
 }
 
 h1 {
@@ -93,25 +83,59 @@ h1 {
   font-weight: 650;
 }
 
+.top-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.icon-btn:hover { border-color: var(--accent); }
+.icon-sun { display: none; }
+:root[data-theme="dark"] .icon-moon { display: none; }
+:root[data-theme="dark"] .icon-sun { display: inline; }
+
+/* --- barre poids + espèce : reste visible en haut quand on fait défiler --- */
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 4px var(--gutter-r) 12px var(--gutter-l);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
 .controls {
   display: flex;
   align-items: stretch;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 10px;
 }
 
 .weight {
   flex: 1 1 8rem;
   display: grid;
   grid-template-columns: 1fr auto;
-  grid-template-areas: "label label" "input unit";
+  grid-template-areas: "label clear" "input unit";
   align-items: baseline;
   column-gap: 8px;
   padding: 6px 14px 8px;
   background: var(--bg);
   border: 2px solid var(--line);
   border-radius: 12px;
+  cursor: text;
 }
 .weight:focus-within { border-color: var(--accent); }
 .weight:has(input[aria-invalid="true"]) { border-color: var(--danger); }
@@ -141,6 +165,25 @@ h1 {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+
+.clear {
+  grid-area: clear;
+  align-self: center;
+  justify-self: end;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: -8px -10px -8px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.clear:hover { background: var(--line); color: var(--text); }
+.clear[hidden] { display: none; }
 
 .seg {
   flex: 1 1 auto;
@@ -185,7 +228,7 @@ h1 {
 }
 
 .warn {
-  margin-top: 10px;
+  margin: 10px 0 0;
   padding: 8px 12px;
   border-radius: 10px;
   background: var(--warn-bg);
@@ -210,6 +253,7 @@ main {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  box-shadow: 0 1px 3px var(--shadow);
   overflow: hidden;
 }
 
@@ -352,15 +396,23 @@ main {
   font-size: 0.9rem;
 }
 .top .btn {
-  min-height: 38px;
+  min-height: 40px;
   font-size: 0.9rem;
   white-space: nowrap;
 }
 
 /* --- mode édition --------------------------------------------------------- */
 
-body.editing .controls,
-body.editing .warn { display: none; }
+body.editing .bar { display: none; }
+
+/* en édition, c'est l'en-tête (bouton Terminé) qui reste visible */
+body.editing .top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
 
 body.editing main {
   columns: 1;

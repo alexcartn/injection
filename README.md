@@ -10,11 +10,13 @@ Fichiers statiques uniquement (HTML, CSS, JS), aucun build, aucune dépendance.
 - Saisir le poids (virgule ou point). Les doses se calculent à chaque frappe.
 - Filtre Tous / Chien / Chat pour masquer les lignes de l'autre espèce.
 - Le poids n'est jamais mémorisé : il faut le ressaisir à chaque ouverture, pour ne pas réutiliser par erreur le poids du patient précédent.
+- La croix dans le champ Poids l'efface d'un geste entre deux patients.
 - Un avertissement s'affiche au-delà de 100 kg (faute de frappe probable).
+- Thème clair par défaut, quel que soit le réglage du téléphone. Le bouton lune/soleil en haut bascule en mode sombre (choix mémorisé sur l'appareil).
 
 ## Modifier les doses
 
-Bouton "Modifier les doses" : coefficient (et dose max pour une fourchette), nom, voie, espèce, groupe, note. On peut ajouter ou supprimer des médicaments et des sections.
+Bouton "Modifier" : coefficient (et dose max pour une fourchette), nom, voie, espèce, groupe, note. On peut ajouter ou supprimer des médicaments et des sections.
 Les modifications sont enregistrées dans le navigateur de l'appareil (elles ne sont pas partagées entre appareils).
 "Rétablir les doses d'origine" revient aux valeurs de `data.js`.
 
