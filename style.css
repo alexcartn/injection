@@ -1391,6 +1391,29 @@ body[data-view="rx"] > .prefs { display: none; }
 .rx-alt-text { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .rx-alt-row .rnote-warn { justify-self: start; }
 
+/* l'article choisi dans Med'Vet : forme, conditionnement, espèces, fiche */
+.rx-article {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  margin: var(--s-1) 0 0;
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+}
+.rx-alt-row .rx-link { font-size: var(--t-xs); }
+
+/* « Mes dosages » : replié quand la substance suffit */
+.rx-stock { display: grid; gap: var(--s-3); }
+.rx-stock > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  color: var(--accent);
+  font-weight: 650;
+  cursor: pointer;
+}
+.rx-stock[open] > summary { margin-bottom: var(--s-2); }
+
 /* éditeur d'un médicament */
 .rx-editor {
   display: grid;

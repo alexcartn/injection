@@ -82,6 +82,14 @@ def number(text):
         return None
 
 
+def base_name(name):
+    return fold(re.sub(r'\s*\(.*?\)', '', name)).strip()
+
+
+# Associations dosées en mg d'association (somme des deux substances), comme dans les RCP et sur les boîtes.
+ASSOCIATIONS = {('acide clavulanique', 'amoxicilline')}
+
+
 def strength_of(pa, name):
     """Dosage par comprimé en mg, ou None si on ne peut pas l'affirmer."""
     if any(a[2] != 'mg' or a[1] is None for a in pa):
@@ -89,6 +97,8 @@ def strength_of(pa, name):
     if len(pa) == 1:
         return pa[0][1]
     total = round(sum(a[1] for a in pa), 4)
+    if tuple(sorted(base_name(a[0]) for a in pa)) in ASSOCIATIONS:
+        return compact(total)
     written = [number(n) for n in re.findall(r'(\d+(?:[.,]\d+)?)\s*mg', name, re.I)]
     return compact(total) if any(w is not None and abs(w - total) < 1e-6 for w in written) else None
 

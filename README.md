@@ -3,7 +3,7 @@
 PWA de calcul des doses d'injection et de perfusion à partir du poids de l'animal.
 Reprend le Google Sheet "Injections et perf hospit" : dose (mL) = poids (kg) x coefficient (mL/kg).
 
-Un second onglet, « Ordonnance », calcule quel dosage de comprimé et combien de plaquettes remettre selon le poids et la durée du traitement.
+Un second onglet, « Ordonnance », choisit dans le catalogue Med'Vet l'article de comprimés le mieux adapté (dosage, plaquettes) selon le poids, la posologie et la durée du traitement, pour avoir le moins de reste possible.
 
 Fichiers statiques uniquement (HTML, CSS, JS, un index JSON), aucun build, aucune dépendance.
 
@@ -24,17 +24,20 @@ Fichiers statiques uniquement (HTML, CSS, JS, un index JSON), aucun build, aucun
 - Un avertissement s'affiche au-delà de 100 kg (faute de frappe probable).
 - Thème clair par défaut, quel que soit le réglage du téléphone. Le bouton lune/soleil en haut bascule en mode sombre (choix mémorisé sur l'appareil).
 
-## Ordonnance : quelle version remettre
+## Ordonnance : quel article Med'Vet remettre
 
 Onglet « Ordonnance » sous la barre du poids (le poids et le filtre Chien / Chat sont communs aux deux onglets). L'appli ouvre toujours sur « Injections ».
 
-- Catalogue : les médicaments en comprimés ou gélules que la clinique remet. « Ajouter un médicament » permet la saisie à la main (nom, dosages en stock, conditionnement). La recherche Med'Vet (nom ou principe actif) reprend le dosage par comprimé, le conditionnement (plaquettes par boîte, comprimés par plaquette) et le caractère sécable. Tout reste modifiable. Le catalogue est enregistré sur l'appareil, comme les doses d'injection (il n'est pas partagé entre appareils).
-- Posologie : jamais préremplie, à saisir pour chaque médicament depuis la fiche (lien « Fiche Med'Vet » dans la carte) : dose en mg/kg (fourchette possible), exprimée par prise ou par jour, et nombre de prises par jour. Tant qu'elle manque, aucun résultat n'est affiché.
+- Principe : on donne la substance, la posologie, le poids et la durée ; l'appli croise tout le catalogue Med'Vet (toutes les marques, tous les dosages, tous les conditionnements de la substance) et propose l'article qui donne la dose avec le moins de reste. Les autres articles possibles sont repliés dessous.
+- Catalogue : « Ajouter un médicament » cherche dans l'index Med'Vet (nom, marque ou principe actif) ; le médicament créé porte le nom de la substance (« Méloxicam »). Dans « Modifier », la substance se change (70 substances) et la marque peut être fixée (« Toutes les marques » par défaut). L'espèce du filtre Chien / Chat restreint les articles à ceux autorisés pour elle. Le catalogue est enregistré sur l'appareil, comme les doses d'injection (il n'est pas partagé entre appareils).
+- Posologie : jamais préremplie, à saisir pour chaque médicament : dose en mg/kg (fourchette possible), exprimée par prise ou par jour, et nombre de prises par jour. Elle reste celle de la clinique : deux marques d'une même substance peuvent avoir des posologies différentes, d'où le lien « Fiche Med'Vet » sur chaque article proposé. Tant qu'elle manque, aucun résultat n'est affiché.
+- Associations : seule l'amoxicilline + acide clavulanique est gérée, dosée en mg d'association (somme des deux substances, 12,5 mg/kg par exemple). Les autres associations ne sont pas proposées.
 - Durée : en jours, saisie libre ou raccourcis (3, 5, 7, 10, 14, 21, 30). Comme le poids, elle n'est jamais mémorisée et se vide avec lui.
-- Résultat par médicament : le dosage retenu, le nombre de comprimés par prise (entier, demi ou quart), puis ce qu'il faut remettre pour la durée (plaquettes, boîtes ou comprimés à l'unité), avec le reste et les jours qu'il couvre. Les autres dosages en stock sont repliés dessous, avec leur propre reste.
-- Choix du dosage : parmi ceux dont la dose par prise tombe dans la tolérance (±10 % par défaut) autour de la dose cible. Une dose max n'est jamais dépassée, un comprimé non sécable n'est jamais coupé, au plus 6 comprimés par prise. Si aucun dosage ne convient, le plus proche est montré avec un avertissement.
-- Réglages (mémorisés) : tolérance, découpe maximale (entiers, moitiés, quarts), remise au client (boîte entière, plaquette entière, à l'unité) et classement (moins de reste, moins cher, moins de comprimés, dose la plus juste). « Moins cher » demande le prix de la boîte, facultatif. Le reste est comparé en mg, pas en nombre de comprimés.
-- Limites : seules les posologies en mg/kg sont gérées (pas les produits par tranche de poids, ni les formes liquides), et seule la valeur saisie par la clinique fait foi : les posologies de Med'Vet ne sont pas reprises.
+- Résultat : l'article (forme, conditionnement, espèces, fiche Med'Vet), le nombre de comprimés par prise (entier, demi ou quart), puis ce qu'il faut remettre pour la durée (plaquettes, boîtes ou comprimés à l'unité), avec le reste en mg et les jours qu'il couvre. En remise par plaquette ou à l'unité, les boîtes de tailles différentes d'un même produit sont regroupées, puisque la plaquette remise est la même.
+- Choix de l'article : parmi ceux dont la dose par prise tombe dans la tolérance (±10 % par défaut) autour de la dose cible. Une dose max n'est jamais dépassée, un comprimé non sécable n'est jamais coupé (si le libellé Med'Vet ne dit pas « sécable », il est considéré comme non sécable), au plus 6 comprimés par prise. Si aucun article ne convient, le plus proche est montré avec un avertissement.
+- Réglages (mémorisés) : articles proposés (tout Med'Vet ou « Mon stock »), tolérance, découpe maximale (entiers, moitiés, quarts), remise au client (boîte entière, plaquette entière, à l'unité) et classement (moins de reste, moins cher, moins de comprimés, dose la plus juste). Le reste est comparé en mg, pas en nombre de comprimés : à dose égale, changer de dosage change peu le reste, ce qui compte c'est la taille de la plaquette. « Moins cher » ne sert qu'avec des dosages saisis à la main, car Med'Vet ne donne pas de prix.
+- « Mon stock » : un médicament peut aussi garder ses propres dosages saisis à la main (mg par comprimé, comprimés par plaquette, plaquettes par boîte, prix de la boîte), utilisés quand il n'a pas de substance ou quand « Mon stock » est choisi dans les réglages.
+- Limites : seules les posologies en mg/kg sont gérées (pas les produits par tranche de poids, ni les formes liquides), et seule la valeur saisie par la clinique fait foi : les posologies de Med'Vet ne sont pas reprises. L'appli propose, la vétérinaire décide.
 
 ## Modifier les doses
 
@@ -55,7 +58,7 @@ Atkinson Hyperlegible Next (interface) et Barlow Condensed (chiffres et petites 
 
 ## Données Med'Vet
 
-`medvet-oral.json` est l'index des comprimés et gélules pour chien et chat (500 produits) tiré d'un export du recueil Med'Vet (marque du SIMV), publié avec l'accord du SIMV. Il ne contient que des faits de catalogue : nom, principes actifs et dosage, espèces, conditionnement, caractère sécable, adresse de la fiche. Ni posologie, ni texte de RCP, ni image. Il ne se charge qu'à la première recherche, puis reste en cache pour le mode hors connexion. S'il manque, la recherche est masquée et les médicaments se saisissent à la main.
+`medvet-oral.json` est l'index des comprimés et gélules pour chien et chat (500 produits) tiré d'un export du recueil Med'Vet (marque du SIMV), publié avec l'accord du SIMV. Il ne contient que des faits de catalogue : nom, principes actifs et dosage, espèces, conditionnement, caractère sécable, adresse de la fiche. Ni posologie, ni texte de RCP, ni image. Il se charge à l'ouverture de l'onglet Ordonnance, puis reste en cache pour le mode hors connexion. S'il manque, la recherche est masquée et les médicaments se saisissent à la main.
 
 Il se régénère avec :
 

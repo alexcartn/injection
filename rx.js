@@ -3,17 +3,20 @@
 //
 // Un médicament du catalogue :
 //   name, species ('CN' | 'CT' | absent), min (+ max) en mg/kg, basis ('intake' par prise | 'day' par jour),
-//   perDay (prises par jour), note, link, formats[]
+//   perDay (prises par jour), note, link, formats[] (dosages saisis à la main : « mon stock »),
+//   substance (libellé Med'Vet : l'appli cherche alors parmi tous les articles de la substance),
+//   brand (marque : restreint la recherche à cette marque, absente = toutes)
 // Un dosage en stock (format) :
 //   name, mg (par comprimé), perBlister (comprimés par plaquette), blisters (plaquettes par boîte),
 //   split ('none' | 'half' | 'quarter' : plus petit morceau possible), price (la boîte, facultatif), unit ('cp' | 'gél.')
 
 export const MAX_PER_INTAKE = 6; // au-delà, on ne propose plus ce dosage : trop de comprimés à donner d'un coup
-export const DEFAULT_PREFS = { tol: 0.1, split: 'half', dispense: 'blister', rank: 'waste' };
+export const DEFAULT_PREFS = { tol: 0.1, split: 'half', dispense: 'blister', rank: 'waste', source: 'medvet' };
 export const TOLERANCES = [0.05, 0.1, 0.15, 0.2];
 export const SPLITS = ['none', 'half', 'quarter'];
 export const DISPENSES = ['box', 'blister', 'unit'];
 export const RANKS = ['waste', 'cost', 'pills', 'exact'];
+export const SOURCES = ['medvet', 'stock']; // tous les articles Med'Vet, ou seulement les dosages saisis
 
 const SPLIT_STEP = { none: 1, half: 0.5, quarter: 0.25 };
 const SPLIT_RANK = { none: 0, half: 1, quarter: 2 };
@@ -217,6 +220,8 @@ export function normalizeDrug(raw = {}) {
     basis: raw.basis === 'day' ? 'day' : 'intake',
     perDay: optInt(raw.perDay),
     note: typeof raw.note === 'string' ? raw.note : '',
+    substance: typeof raw.substance === 'string' && raw.substance ? raw.substance : undefined,
+    brand: typeof raw.brand === 'string' && raw.brand ? raw.brand : undefined,
     link: typeof raw.link === 'string' && /^https:\/\//.test(raw.link) ? raw.link : undefined,
     formats: Array.isArray(raw.formats) ? raw.formats.filter((f) => f && typeof f === 'object').map(normalizeFormat) : [],
   };
@@ -228,6 +233,7 @@ export function normalizePrefs(raw = {}) {
     split: SPLITS.includes(raw.split) ? raw.split : DEFAULT_PREFS.split,
     dispense: DISPENSES.includes(raw.dispense) ? raw.dispense : DEFAULT_PREFS.dispense,
     rank: RANKS.includes(raw.rank) ? raw.rank : DEFAULT_PREFS.rank,
+    source: SOURCES.includes(raw.source) ? raw.source : DEFAULT_PREFS.source,
   };
 }
 
@@ -254,7 +260,109 @@ export function searchIndex(products, query, limit = 30) {
 
 const mgText = (n) => String(n).replace('.', ',');
 
+// --- substances et articles : croiser tout le catalogue Med'Vet ---------------------------
+
+const stripNote = (name) => name.replace(/\s*\(.*?\)/g, '').trim();
+const labelCase = (text) => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+// Seules associations dosées en mg d'association : somme des deux substances (voir tools/build-medvet-index.py).
+const ASSOCIATIONS = new Map([['acide clavulanique + amoxicilline', 'Amoxicilline + acide clavulanique']]);
+
+// Clé d'une substance : sans précision entre parenthèses, casse ni accents ; les associations sont triées.
+export const substanceKey = (label) => label.split('+').map((part) => fold(stripNote(part)).trim()).sort().join(' + ');
+
+// { key, label } d'un produit, ou null s'il n'a pas de dosage exploitable pour une posologie en mg/kg.
+export function substanceOf(product) {
+  if (product.m == null) return null;
+  const names = product.a.map((a) => stripNote(a[0]));
+  if (names.some((n) => !n)) return null;
+  if (names.length === 1) return { key: substanceKey(names[0]), label: labelCase(names[0]) };
+  const key = substanceKey(names.join('+'));
+  return ASSOCIATIONS.has(key) ? { key, label: ASSOCIATIONS.get(key) } : null;
+}
+
+// products -> Map(clé -> { label, products[] }), calculé une fois par index
+const substanceCache = new WeakMap();
+export function substanceIndex(products) {
+  let map = substanceCache.get(products);
+  if (!map) {
+    map = new Map();
+    for (const product of products) {
+      const sub = substanceOf(product);
+      if (!sub) continue;
+      if (!map.has(sub.key)) map.set(sub.key, { label: sub.label, products: [] });
+      map.get(sub.key).products.push(product);
+    }
+    substanceCache.set(products, map);
+  }
+  return map;
+}
+
+// Substances proposables, par ordre alphabétique : { label, articles }
+export function listSubstances(products) {
+  return [...substanceIndex(products).values()]
+    .map((s) => ({ label: s.label, articles: s.products.reduce((n, p) => n + p.k.filter((k) => k[0]).length, 0) }))
+    .sort((a, b) => fold(a.label).localeCompare(fold(b.label)));
+}
+
+export function brandsOf(products, label) {
+  const entry = substanceIndex(products).get(substanceKey(label));
+  return entry ? [...new Set(entry.products.map((p) => p.b))].sort((a, b) => fold(a).localeCompare(fold(b))) : [];
+}
+
+export function formatPackText(format) {
+  if (!format.perBlister) return 'conditionnement inconnu';
+  const what = format.unit === 'gél.' ? 'gélule' : 'comprimé';
+  const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
+  if (format.boxes?.length > 1) {
+    // plusieurs tailles de boîte du même produit : la plaquette remise est la même
+    const list = format.boxes.map((n) => (n === 1 ? 'une seule' : n));
+    return `plaquettes de ${format.perBlister} (boîtes de ${list.slice(0, -1).join(', ')} ou ${list.at(-1)} plaquettes)`;
+  }
+  return format.blisters > 1 ? `${plural(format.blisters, 'plaquette')} de ${format.perBlister}` : plural(format.perBlister, what);
+}
+
+// Tous les articles (produit + conditionnement lisible) de la substance, prêts pour plan().
+// species : 'CN' | 'CT' | undefined ; brand : restreint à une marque ;
+// dispense : en 'blister' ou 'unit' la taille de la boîte ne change rien (on remet des plaquettes ou des
+// comprimés), donc les boîtes d'un même produit sont regroupées ; en 'box' chacune compte.
+export function marketFormats(products, label, { species, brand, dispense = 'blister' } = {}) {
+  const entry = substanceIndex(products).get(substanceKey(label));
+  if (!entry) return [];
+  const out = new Map();
+  for (const product of entry.products) {
+    if (species && !product.s.split(',').includes(species)) continue;
+    if (brand && product.b !== brand) continue;
+    for (const pack of product.k) {
+      if (!pack[0]) continue; // conditionnement illisible : on ne sait pas calculer le reste
+      const key = dispense === 'box' ? `${product.d}|${pack[0]}|${pack[1]}` : `${product.d}|${pack[1]}`;
+      const known = out.get(key);
+      if (known) {
+        known.boxes = [...new Set([...known.boxes, pack[0]])].sort((a, b) => a - b);
+        if (pack[0] < known.blisters) known.blisters = pack[0]; // la plus petite boîte sert au calcul
+        continue;
+      }
+      out.set(key, {
+        ...formatFromProduct(product, pack),
+        brand: product.b,
+        form: product.f,
+        species: product.s,
+        assoc: product.a.length > 1,
+        boxes: [pack[0]],
+        link: product.l ? (product.l.startsWith('https://') ? product.l : LINK_PREFIX + product.l) : undefined,
+      });
+    }
+  }
+  return [...out.values()];
+}
+
+// Nom d'un article : « Marque dosage mg ». Pour une association, le dosage est celui écrit dans la
+// dénomination (« Synulox 250 mg », « Clavusan 250 mg + 62,5 mg ») : les marques n'ont pas toutes la même habitude.
+const ASSOCIATION_DOSE = /\d[\d.,]*(?:\s*(?:mg)?\s*[/+]\s*\d[\d.,]*)*\s*mg/i;
 export function productName(product) {
+  if (product.a.length > 1) {
+    const dose = product.d.match(ASSOCIATION_DOSE)?.[0];
+    return dose ? `${product.b} ${dose.replace(/\s*mg/gi, ' mg').replace(/\s+/g, ' ')}` : product.d;
+  }
   return product.m != null ? `${product.b} ${mgText(product.m)} mg` : product.d;
 }
 
@@ -279,8 +387,10 @@ export function formatFromProduct(product, pack) {
 }
 
 export function drugFromProduct(product, pack) {
+  const substance = substanceOf(product);
   return normalizeDrug({
-    name: product.b,
+    name: substance ? substance.label : product.b,
+    substance: substance?.label,
     link: product.l ? (product.l.startsWith('https://') ? product.l : LINK_PREFIX + product.l) : undefined,
     formats: [formatFromProduct(product, pack)],
   });
