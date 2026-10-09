@@ -1104,6 +1104,321 @@ body:has(#weight:focus) .dock { display: none; }
   .warn { order: 5; flex-basis: 100%; margin: 0; }
 }
 
+/* --- choix de la vue : injections ou ordonnance --------------------------------------- */
+
+.view-row { padding: var(--s-3) var(--gutter-r) 0 var(--gutter-l); }
+.seg-view { max-width: 22rem; }
+.seg-view span { min-height: 44px; }
+body.editing .view-row { display: none; }
+
+/* l'ordonnance n'a ni mode "Modifier" global, ni barre de sections, ni fiche à imprimer */
+body[data-view="rx"] #edit-toggle,
+body[data-view="rx"] #hint,
+body[data-view="rx"] .dock,
+body[data-view="rx"] > .prefs { display: none; }
+@media (max-width: 959px) {
+  body[data-view="rx"]:not(.editing) { padding-bottom: 0; }
+}
+
+/* --- ordonnance : quelle version remettre ---------------------------------------------- */
+
+.rx {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--s-5) max(var(--s-4), env(safe-area-inset-right)) var(--s-2) max(var(--s-4), env(safe-area-inset-left));
+}
+.rx[hidden] { display: none; }
+
+.rx-top {
+  display: grid;
+  gap: var(--s-4);
+  max-width: 44rem;
+  margin-bottom: var(--s-6);
+}
+
+/* durée du traitement : saisie libre + raccourcis */
+.rx-days {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-4);
+}
+.days-box {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas: "label label" "input unit";
+  justify-content: start;
+  align-items: baseline;
+  column-gap: var(--s-2);
+  min-width: 9rem;
+  padding: var(--s-2) var(--s-4);
+  border: 2px solid var(--rule-strong);
+  border-radius: var(--r);
+  background: var(--paper);
+  cursor: text;
+}
+.days-box:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+.days-box:has(input[aria-invalid="true"]) { outline: 3px solid var(--danger); outline-offset: 2px; }
+.days-label {
+  grid-area: label;
+  color: var(--ink-2);
+  font: 600 var(--t-xs) / 1.2 var(--font-num);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.days-box input {
+  grid-area: input;
+  width: 4ch;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: 700 var(--t-xl) / 1.1 var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+.days-box input::placeholder { color: var(--ink-2); opacity: 0.5; }
+.days-unit {
+  grid-area: unit;
+  color: var(--ink-2);
+  font: 600 var(--t-md) / 1 var(--font-num);
+}
+.dchips { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.dchip {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border: 2px solid var(--rule-strong);
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--ink-2);
+  font: 700 var(--t-md) / 1 var(--font-num);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.dchip[aria-pressed="true"] {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+}
+@media (hover: hover) {
+  .dchip[aria-pressed="false"]:hover { background: var(--paper-2); }
+}
+
+/* réglages de l'ordonnance : même repli que « Fiche et réglages » */
+.rx .prefs { margin: 0; padding: 0; }
+.rx-prefs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--s-3);
+}
+.rx .pref-field .pick { width: 100%; }
+
+.rx-bar { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+
+/* ajout depuis Med'Vet */
+.rx-add {
+  display: grid;
+  gap: var(--s-3);
+  justify-items: start;
+  padding: var(--s-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--paper-2);
+}
+.rx-add[hidden],
+.rx-search-host[hidden],
+.rx-editor[hidden] { display: none; }
+.rx-sub {
+  width: 100%;
+  margin: 0;
+  padding-bottom: var(--s-1);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+  font: 600 var(--t-xs) / 1.2 var(--font-num);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.rx-search { display: grid; gap: var(--s-2); width: 100%; }
+.rx-search .text {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border: 2px solid var(--rule-strong);
+  border-radius: var(--r);
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 var(--t-sm) / 1.4 var(--font-ui);
+}
+.rx-search .text:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.rx-hits { display: grid; gap: var(--s-3); }
+.rx-hit { padding-top: var(--s-2); border-top: 1px solid var(--rule); }
+.rx-hit-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+  margin: 0;
+  font-weight: 650;
+}
+.rx-hit-meta { color: var(--ink-2); font-size: var(--t-xs); font-weight: 400; }
+.rx-packs {
+  display: grid;
+  gap: var(--s-1);
+  margin: var(--s-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.rx-packs li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+/* une carte par médicament */
+.rx-list {
+  columns: 21rem;
+  column-gap: var(--s-7);
+  column-rule: 1px solid var(--rule);
+}
+.rx-list > .empty { column-span: all; }
+.rx-card {
+  break-inside: avoid;
+  margin: 0 0 var(--s-6);
+  border-top: 2px solid var(--ink);
+}
+.rx-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: var(--s-2) 0 var(--s-1);
+}
+.rx-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.rx-name {
+  margin: 0;
+  font: 600 var(--t-md) / 1.2 var(--font-num);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.rx-title .chip { margin-left: 0; }
+.chip[hidden] { display: none; }
+.rx-poso {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  margin: 0 0 var(--s-2);
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+}
+.rx-link { color: var(--accent); font-weight: 650; text-underline-offset: 2px; }
+
+.rx-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+  margin: var(--s-3) 0 0;
+}
+.rx-label {
+  color: var(--ink-2);
+  font: 600 var(--t-xs) / 1.2 var(--font-num);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.rx-vname { font-size: var(--t-md); font-weight: 700; }
+
+/* deux lignes : par prise, puis à remettre (même gabarit que les doses d'injection) */
+.rx-line {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(var(--s-4), 1fr) auto;
+  align-items: baseline;
+  column-gap: var(--s-2);
+  padding: var(--s-2) 0;
+}
+.rx-line .sub { grid-column: 1 / -1; }
+.rx-bits { justify-content: flex-start; margin-left: 0; }
+
+.rx-warn {
+  margin: var(--s-2) 0 0;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r);
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font-weight: 600;
+}
+.rx-hint {
+  margin: var(--s-2) 0 0;
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+}
+.rx-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  padding: var(--s-2) 0;
+  color: var(--ink-2);
+}
+
+.rx-alt { margin-top: var(--s-2); }
+.rx-alt summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent);
+  font-weight: 650;
+  cursor: pointer;
+}
+.rx-alt ul { margin: 0; padding: 0; list-style: none; }
+.rx-alt-row {
+  display: grid;
+  gap: 2px;
+  padding: var(--s-2) 0;
+  border-top: 1px solid var(--rule);
+  font-size: var(--t-xs);
+}
+.rx-alt-row .name { font-size: var(--t-sm); }
+.rx-alt-text { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rx-alt-row .rnote-warn { justify-self: start; }
+
+/* éditeur d'un médicament */
+.rx-editor {
+  display: grid;
+  gap: var(--s-3);
+  margin: var(--s-3) 0 0;
+  padding: var(--s-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--paper-2);
+}
+.rx-editor .field-label { overflow: visible; white-space: normal; }
+.rx-form,
+.rx-fmt {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-2) var(--s-3);
+}
+.rx-form .wide,
+.rx-fmt .wide { grid-column: 1 / -1; }
+.rx-fmt {
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rule);
+}
+.rx-fmt .btn { grid-column: 1 / -1; justify-self: start; }
+.rx-help { margin: 0; color: var(--ink-2); font-size: var(--t-xs); }
+.rx-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.rx-end { justify-content: space-between; }
+
 /* --- impression : fiche d'hospitalisation A4, lisible en noir et blanc ---------- */
 
 @media print {
@@ -1138,7 +1453,7 @@ body:has(#weight:focus) .dock { display: none; }
   }
 
   /* tout ce qui sert à l'écran disparaît */
-  .chrome, .hint, .prefs, .dock, .set, .clear, footer, .warn { display: none !important; }
+  .chrome, .view-row, .hint, .prefs, .dock, .set, .clear, footer, .warn, .rx { display: none !important; }
   .print-off { display: none !important; }
 
   /* en-tête de la fiche */

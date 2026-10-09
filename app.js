@@ -1,6 +1,10 @@
 import { DEFAULT_SECTIONS } from './data.js';
 import { ICONS } from './section-icons.js';
 import { ANIMALS } from './animals.js';
+import {
+  plan, tabletText, tabletSpeech, searchIndex, packText, productName, formatFromProduct, drugFromProduct,
+  normalizeDrug, normalizeFormat, normalizePrefs, fold, TOLERANCES, MAX_PER_INTAKE,
+} from './rx.js';
 
 const STORE_KEY = 'injection:sections:v1';
 const SPECIES_KEY = 'injection:species';
@@ -8,6 +12,8 @@ const SPECIES_LABEL = { CN: 'Chien', CT: 'Chat' };
 const UNITS = ['mL', 'mL/h'];
 const WEIGHT_WARN_ABOVE = 100;
 const PREFS_KEY = 'injection:prefs';
+const RX_KEY = 'injection:rx:v1';
+const RX_PREFS_KEY = 'injection:rx-prefs:v1';
 const ROUND_STEPS = [0, 0.01, 0.05, 0.1];
 const DRIP_SETS = [20, 60];
 // Un arrondi qui change la dose de plus de 10 % est refusé : la valeur exacte est gardée.
@@ -121,7 +127,29 @@ function loadPrefs() {
   return prefs;
 }
 
+// Ordonnance : le catalogue des médicaments remis par la clinique (comprimés), enregistré sur l'appareil.
+function loadRx() {
+  try {
+    const parsed = JSON.parse(storeGet(RX_KEY) || '[]');
+    if (Array.isArray(parsed)) return parsed.filter((d) => d && typeof d === 'object').map(normalizeDrug);
+  } catch { /* données corrompues : catalogue vide */ }
+  return [];
+}
+
+function loadRxPrefs() {
+  try {
+    return normalizePrefs(JSON.parse(storeGet(RX_PREFS_KEY) || '{}'));
+  } catch { /* réglages corrompus : valeurs par défaut */ }
+  return normalizePrefs();
+}
+
 const state = {
+  view: 'doses', // 'doses' ou 'rx' ; on rouvre toujours sur les doses
+  rx: {
+    drugs: loadRx(),
+    prefs: loadRxPrefs(),
+    days: null, // durée du traitement : propre au patient en cours, jamais mémorisée
+  },
   sections: loadSections(),
   species: loadSpecies(),
   prefs: loadPrefs(),
@@ -134,6 +162,8 @@ const state = {
 };
 
 const save = () => storeSet(STORE_KEY, JSON.stringify(state.sections));
+const saveRx = () => storeSet(RX_KEY, JSON.stringify(state.rx.drugs));
+const saveRxPrefs = () => storeSet(RX_PREFS_KEY, JSON.stringify(state.rx.prefs));
 const savePrefs = () => storeSet(PREFS_KEY, JSON.stringify(state.prefs));
 
 // --- utilitaires ------------------------------------------------------------
@@ -397,13 +427,13 @@ const field = (label, control, cls = '') =>
 
 const button = (label, onclick, cls = 'btn-ghost') => el('button', { type: 'button', class: `btn ${cls}`, onclick }, label);
 
-function textInput(value, onChange) {
+function textInput(value, onChange, commit = save) {
   const input = el('input', { type: 'text', autocomplete: 'off', value: value ?? '' });
-  input.addEventListener('input', () => { onChange(input.value.trim()); save(); });
+  input.addEventListener('input', () => { onChange(input.value.trim()); commit(); });
   return input;
 }
 
-function numInput(value, onChange, required = false) {
+function numInput(value, onChange, required = false, commit = save) {
   const input = el('input', {
     type: 'text',
     inputmode: 'decimal',
@@ -414,15 +444,15 @@ function numInput(value, onChange, required = false) {
     const empty = input.value.trim() === '';
     input.setAttribute('aria-invalid', String(empty ? required : parseNum(input.value) === null));
   };
-  input.addEventListener('input', () => { flag(); onChange(parseNum(input.value)); save(); });
+  input.addEventListener('input', () => { flag(); onChange(parseNum(input.value)); commit(); });
   flag();
   return input;
 }
 
-function select(options, current, onChange) {
+function select(options, current, onChange, commit = save) {
   const node = el('select', {},
     options.map(([value, label]) => el('option', { value, selected: value === current }, label)));
-  node.addEventListener('change', () => { onChange(node.value); save(); });
+  node.addEventListener('change', () => { onChange(node.value); commit(); });
   return node;
 }
 
@@ -632,7 +662,13 @@ function updateWeight() {
   warn.textContent = message;
   warn.hidden = !message;
 
-  if (!state.editing) renderView();
+  // un poids vidé = patient suivant : la durée du traitement précédent ne doit pas rester
+  if (text === '') {
+    state.rx.days = null;
+    syncRxDays?.();
+  }
+
+  renderCurrent();
 }
 
 weightInput.addEventListener('input', updateWeight);
@@ -739,6 +775,518 @@ roundSelect.addEventListener('change', () => {
   if (!state.editing) renderView();
 });
 
+// --- ordonnance : quelle version remettre selon le poids et la durée du traitement ----------
+
+const rxRoot = document.getElementById('rx');
+const pageHeading = document.querySelector('h1');
+const HEADINGS = { doses: pageHeading.textContent, rx: 'Ordonnance : version à remettre' };
+const DAY_CHOICES = [3, 5, 7, 10, 14, 21, 30];
+const SPLIT_CHOICES = [['none', 'Pas coupé'], ['half', 'Moitiés'], ['quarter', 'Quarts']];
+const eur = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' });
+
+const countText = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
+const signedPercent = (dev) => `${dev < 0 ? '−' : '+'}${Math.round(Math.abs(dev) * 100)} %`;
+const formatLabel = (drug, f) => f.name || (drug.name && isNum(f.mg) ? `${drug.name} ${fmtMg.format(f.mg)} mg` : 'Sans nom');
+const cpWord = (format) => (format.unit === 'gél.' ? 'gélule' : 'comprimé');
+
+let rxBuilt = false;
+let rxListEl;
+let rxDaysInput;
+let rxDaysChips;
+let rxAddPanel;
+let rxAddButton;
+const rxCards = new Map(); // médicament -> { root, refresh, open }
+let rxIndexPromise = null;
+let syncRxDays = null;
+
+// L'index Med'Vet (comprimés et gélules pour chien et chat) ne se charge qu'à la première recherche.
+function loadRxIndex() {
+  rxIndexPromise ??= fetch('medvet-oral.json')
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('index indisponible'))))
+    .then((data) => {
+      if (data?.v !== 1 || !Array.isArray(data.p)) throw new Error('index illisible');
+      return data;
+    })
+    .catch((error) => { rxIndexPromise = null; throw error; });
+  return rxIndexPromise;
+}
+
+function posoText(drug) {
+  if (!isNum(drug.min) || !drug.perDay) return 'Posologie à renseigner';
+  const range = isNum(drug.max) && drug.max > drug.min
+    ? `${fmtMg.format(drug.min)} – ${fmtMg.format(drug.max)}`
+    : fmtMg.format(drug.min);
+  const prises = countText(drug.perDay, 'prise');
+  return drug.basis === 'day' ? `${range} mg/kg par jour, en ${prises}` : `${range} mg/kg par prise, ${prises} par jour`;
+}
+
+// --- résultat d'un médicament --------------------------------------------------------------
+
+function rxNote(text, onClick, label) {
+  return el('div', { class: 'rx-note' }, el('span', {}, text), button(label, onClick, 'btn-small'));
+}
+
+function supplyLines(o, days) {
+  const s = o.supply;
+  const label = days ? `À remettre · ${countText(days, 'jour')}` : 'À remettre';
+  let big = '–';
+  let unit = '';
+  const bits = [];
+  if (!s) {
+    bits.push('Choisissez la durée du traitement.');
+  } else if (!s.packs) {
+    bits.push(`${tabletText(s.totalQuarters / 4)} ${o.format.unit} à donner`, 'conditionnement non renseigné');
+  } else {
+    big = String(s.count);
+    if (s.unit === 'box') {
+      unit = s.count > 1 ? 'boîtes' : 'boîte';
+      bits.push(s.blisters > 1 ? `${s.perBox} ${o.format.unit} (${s.blisters} plaquettes de ${s.perBlister})` : `${s.perBox} ${o.format.unit}`);
+    } else if (s.unit === 'blister') {
+      unit = s.count > 1 ? 'plaquettes' : 'plaquette';
+      bits.push(`de ${s.perBlister} ${o.format.unit}`);
+    } else {
+      unit = o.format.unit;
+    }
+    bits.push(`${tabletText(s.totalQuarters / 4)} ${o.format.unit} à donner`);
+    bits.push(s.leftover > 0 ? `reste ${tabletText(s.leftover)} ${o.format.unit} (${fmtMg.format(s.leftoverMg)} mg)` : 'aucun reste');
+    if (s.extraDays > 0) bits.push(`le reste couvre ${countText(s.extraDays, 'jour')} de plus`);
+    if (s.cost !== null) bits.push(`≈ ${eur.format(s.cost)}`);
+  }
+  return el('div', { class: 'rx-line' },
+    el('span', { class: 'name' }, label),
+    el('span', { class: 'leader', 'aria-hidden': 'true' }),
+    el('div', { class: s?.packs ? 'dose' : 'dose dose-empty' },
+      big,
+      unit && el('span', { class: 'dose-unit' }, unit),
+    ),
+    el('div', { class: 'sub' }, el('span', { class: 'calc rx-bits' }, bits.map((b) => el('span', { class: 'extra' }, b)))),
+  );
+}
+
+function intakeLine(o, target) {
+  const dev = o.dev;
+  const range = target.ranged ? `${fmtMg.format(target.lo)} – ${fmtMg.format(target.hi)}` : fmtMg.format(target.lo);
+  return el('div', { class: 'rx-line' },
+    el('span', { class: 'name' }, 'Par prise'),
+    el('span', { class: 'leader', 'aria-hidden': 'true' }),
+    el('div', { class: 'dose' },
+      el('span', { 'aria-hidden': 'true' }, tabletText(o.tablets)),
+      el('span', { class: 'dose-unit', 'aria-hidden': 'true' }, o.format.unit),
+      el('span', { class: 'sr-only' }, tabletSpeech(o.tablets, cpWord(o.format))),
+    ),
+    el('div', { class: 'sub' },
+      el('span', { class: 'calc rx-bits' },
+        el('span', { class: 'extra' }, `${fmtMg.format(o.dose)} mg`),
+        el('span', { class: 'extra' }, `${fmtMg.format(o.perKg)} mg/kg`),
+        el('span', { class: 'coef' }, `cible ${range} mg`),
+        Math.abs(dev) > 1e-9 && el('span', { class: o.ok ? 'rnote' : 'rnote rnote-warn' }, `écart ${signedPercent(dev)}`),
+      ),
+    ),
+  );
+}
+
+function altRow(drug, o, days) {
+  const s = o.supply;
+  const parts = [`${tabletText(o.tablets)} ${o.format.unit} par prise`];
+  if (s?.packs) {
+    const what = s.unit === 'box' ? countText(s.count, 'boîte') : s.unit === 'blister' ? countText(s.count, 'plaquette') : `${s.count} ${o.format.unit}`;
+    parts.push(what, s.leftover > 0 ? `reste ${tabletText(s.leftover)} ${o.format.unit} (${fmtMg.format(s.leftoverMg)} mg)` : 'aucun reste');
+    if (s.cost !== null) parts.push(`≈ ${eur.format(s.cost)}`);
+  } else if (s && days) {
+    parts.push('conditionnement non renseigné');
+  }
+  return el('li', { class: 'rx-alt-row' },
+    el('span', { class: 'name' }, formatLabel(drug, o.format)),
+    el('span', { class: 'rx-alt-text' }, parts.join(' · ')),
+    !o.ok && el('span', { class: 'rnote rnote-warn' }, `hors tolérance ${signedPercent(o.dev)}`),
+  );
+}
+
+function rxResult(drug, openEditor) {
+  const days = state.rx.days;
+  const prefs = state.rx.prefs;
+  const r = plan(drug, { weight: state.weight, days, prefs });
+  if (r.status === 'drug') return [rxNote('Renseignez la dose (mg/kg) et le nombre de prises par jour.', openEditor, 'Renseigner')];
+  if (r.status === 'formats') {
+    return [rxNote(r.skipped ? 'Indiquez les mg par comprimé du dosage.' : 'Aucun dosage en stock pour ce médicament.', openEditor, 'Ajouter un dosage')];
+  }
+  if (r.status === 'weight') return [el('p', { class: 'rx-hint' }, 'Saisissez le poids de l’animal.')];
+
+  const [best, ...others] = r.options;
+  const out = [];
+  if (!best.ok) {
+    out.push(el('p', { class: 'rx-warn', role: 'alert' },
+      `Aucun dosage ne tombe à ±${Math.round(prefs.tol * 100)} % de la dose cible. Le plus proche donne ${signedPercent(best.dev)} : à ne pas remettre sans vérification.`));
+  }
+  out.push(
+    el('p', { class: 'rx-pick' },
+      el('span', { class: 'rx-label' }, best.ok ? 'Version à donner' : 'Plus proche'),
+      el('span', { class: 'rx-vname' }, formatLabel(drug, best.format)),
+    ),
+    intakeLine(best, r.target),
+    supplyLines(best, days),
+  );
+  if (r.skipped) out.push(el('p', { class: 'rx-hint' }, `${countText(r.skipped, 'dosage')} sans mg par comprimé : ignoré${r.skipped > 1 ? 's' : ''}.`));
+  if (others.length) {
+    out.push(el('details', { class: 'rx-alt' },
+      el('summary', {}, `Autres dosages (${others.length})`),
+      el('ul', {}, others.map((o) => altRow(drug, o, days))),
+    ));
+  }
+  return out;
+}
+
+// --- une carte par médicament : le résultat se redessine, l'éditeur garde ses champs ------------
+
+function rxCard(drug) {
+  const known = rxCards.get(drug);
+  if (known) return known;
+
+  const title = el('h2', { class: 'rx-name' });
+  const chip = el('span', { class: 'chip' });
+  const toggle = el('button', { type: 'button', class: 'btn btn-ghost btn-small', 'aria-expanded': 'false' }, 'Modifier');
+  const poso = el('p', { class: 'rx-poso' });
+  const result = el('div', { class: 'rx-result' });
+  const editor = el('div', { class: 'rx-editor', hidden: true });
+  const root = el('section', { class: 'rx-card' },
+    el('div', { class: 'rx-head' }, el('div', { class: 'rx-title' }, title, chip), toggle),
+    poso, result, editor,
+  );
+
+  let built = false;
+  const refresh = () => {
+    title.textContent = drug.name || 'Sans nom';
+    chip.textContent = SPECIES_LABEL[drug.species] ?? '';
+    chip.className = `chip chip-${drug.species}`;
+    chip.hidden = !drug.species;
+    poso.replaceChildren(...[
+      posoText(drug),
+      drug.note && el('span', { class: 'rx-note-text' }, drug.note),
+      drug.link && el('a', { class: 'rx-link', href: drug.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
+    ].filter(Boolean));
+    result.replaceChildren(...rxResult(drug, () => open(true)));
+  };
+  const open = (on) => {
+    if (on && !built) { buildRxEditor(drug, editor, refresh, () => open(false)); built = true; }
+    editor.hidden = !on;
+    toggle.textContent = on ? 'Terminé' : 'Modifier';
+    toggle.setAttribute('aria-expanded', String(on));
+    if (on) editor.querySelector('input, select')?.focus({ preventScroll: true });
+  };
+  toggle.addEventListener('click', () => open(editor.hidden));
+
+  const card = { root, refresh, open };
+  rxCards.set(drug, card);
+  refresh();
+  return card;
+}
+
+// --- édition d'un médicament -----------------------------------------------------------------
+
+function fmtEditor(drug, f, rerender, commit) {
+  return el('div', { class: 'rx-fmt' },
+    field('Nom du dosage', textInput(f.name, (v) => { f.name = v; }, commit), 'wide'),
+    field('Dosage (mg par comprimé)', numInput(f.mg, (v) => { f.mg = v; }, true, commit)),
+    field('Se coupe en', select(SPLIT_CHOICES, f.split, (v) => { f.split = v; }, commit)),
+    field('Comprimés par plaquette', numInput(f.perBlister, (v) => { f.perBlister = Number.isInteger(v) && v > 0 ? v : null; }, false, commit)),
+    field('Plaquettes par boîte', numInput(f.blisters, (v) => { f.blisters = Number.isInteger(v) && v > 0 ? v : 1; }, false, commit)),
+    field('Prix de la boîte (€, facultatif)', numInput(f.price, (v) => { f.price = v ?? undefined; }, false, commit), 'wide'),
+    button('Retirer ce dosage', () => {
+      if (!confirm(`Retirer le dosage « ${f.name || 'Sans nom'} » ?`)) return;
+      drug.formats.splice(drug.formats.indexOf(f), 1);
+      commit();
+      rerender();
+    }, 'btn-danger btn-small'),
+  );
+}
+
+function buildRxEditor(drug, host, refresh, close) {
+  const commit = () => { saveRx(); refresh(); };
+  const formatsHost = el('div', { class: 'rx-formats' });
+  const renderFormats = () => formatsHost.replaceChildren(
+    ...(drug.formats.length ? drug.formats.map((f) => fmtEditor(drug, f, renderFormats, commit)) : [el('p', { class: 'rx-hint' }, 'Aucun dosage : ajoutez-en un ci-dessous.')]),
+  );
+  renderFormats();
+
+  const searchHost = el('div', { class: 'rx-search-host', hidden: true });
+  let search;
+  const addFound = (product, pack) => {
+    const exists = drug.formats.some((f) => f.name === productName(product) && f.perBlister === pack[1] && f.blisters === (pack[0] ?? 1));
+    if (!exists) drug.formats.push(formatFromProduct(product, pack));
+    if (!drug.link && product.l) drug.link = drugFromProduct(product, pack).link;
+    commit();
+    renderFormats();
+    return exists ? `${productName(product)} est déjà dans la liste.` : `${productName(product)} ajouté.`;
+  };
+
+  host.replaceChildren(
+    el('div', { class: 'rx-form' },
+      field('Nom', textInput(drug.name, (v) => { drug.name = v; }, commit), 'wide'),
+      field('Espèce', select([['', 'Chien et chat'], ['CN', 'Chien'], ['CT', 'Chat']], drug.species || '', (v) => { drug.species = v || undefined; }, commit)),
+      field('Prises par jour', select(
+        [['', '–'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']],
+        drug.perDay ? String(drug.perDay) : '',
+        (v) => { drug.perDay = v ? Number(v) : null; },
+        commit,
+      )),
+      field('Dose (mg/kg)', numInput(drug.min, (v) => { drug.min = v; }, true, commit)),
+      field('Dose max (mg/kg)', numInput(drug.max, (v) => { drug.max = v ?? undefined; }, false, commit)),
+      field('Dose donnée', select([['intake', 'par prise'], ['day', 'par jour']], drug.basis, (v) => { drug.basis = v; }, commit), 'wide'),
+      field('Note', textInput(drug.note, (v) => { drug.note = v; }, commit), 'wide'),
+    ),
+    el('p', { class: 'rx-help' }, 'La dose se lit sur la fiche du médicament. « Par jour » est divisée par le nombre de prises.'),
+    el('h3', { class: 'rx-sub' }, 'Dosages en stock'),
+    formatsHost,
+    el('div', { class: 'rx-actions' },
+      button('Ajouter depuis Med’Vet', () => {
+        searchHost.hidden = !searchHost.hidden;
+        if (!search) { search = rxSearch(addFound); searchHost.replaceChildren(search.root); }
+        if (!searchHost.hidden) search.focus();
+      }),
+      button('Ajouter à la main', () => {
+        drug.formats.push(normalizeFormat({ split: 'none' }));
+        commit();
+        renderFormats();
+        formatsHost.lastElementChild.querySelector('input')?.focus();
+      }),
+    ),
+    searchHost,
+    el('div', { class: 'rx-actions rx-end' },
+      button('Supprimer ce médicament', () => {
+        if (!confirm(`Supprimer « ${drug.name || 'Sans nom'} » du catalogue ?`)) return;
+        state.rx.drugs.splice(state.rx.drugs.indexOf(drug), 1);
+        rxCards.delete(drug);
+        saveRx();
+        renderRx();
+      }, 'btn-danger btn-small'),
+      button('Terminé', close, 'btn-primary btn-small'),
+    ),
+  );
+}
+
+// --- recherche dans l'index Med'Vet ------------------------------------------------------------
+
+function rxSearch(onPick) {
+  const input = el('input', {
+    type: 'search',
+    class: 'text',
+    autocomplete: 'off',
+    placeholder: 'Nom ou principe actif (ex. Zitac, méloxicam)',
+    'aria-label': 'Rechercher un médicament dans Med’Vet',
+  });
+  const status = el('p', { class: 'prefs-note', role: 'status' }, 'Chargement de la base Med’Vet…');
+  const hits = el('div', { class: 'rx-hits' });
+  const root = el('div', { class: 'rx-search' }, input, status, hits);
+  let data = null;
+  let message = '';
+
+  const run = () => {
+    if (!data) return;
+    const query = input.value.trim();
+    if (query.length < 2) {
+      hits.replaceChildren();
+      status.textContent = message || `Base Med’Vet du ${data.date} : comprimés et gélules pour chien et chat. Posologies non incluses.`;
+      return;
+    }
+    const found = searchIndex(data.p, query, 15);
+    status.textContent = message || (found.length ? `${countText(found.length, 'produit')}${found.length === 15 ? ' (affinez la recherche)' : ''}` : 'Aucun résultat : ajoutez-le à la main.');
+    message = '';
+    hits.replaceChildren(...found.map((product) => hit(product)));
+  };
+
+  const hit = (product) => {
+    const actives = product.a.map((a) => `${a[0].replace(/\s*\(.*\)/, '').toLowerCase()}${a[1] != null ? ` ${String(a[1]).replace('.', ',')} ${a[2]}` : ''}`).join(' + ');
+    const species = product.s.split(',').map((c) => SPECIES_LABEL[c]).join(', ');
+    return el('div', { class: 'rx-hit' },
+      el('p', { class: 'rx-hit-name' }, productName(product), el('span', { class: 'rx-hit-meta' }, `${actives} · ${species}`)),
+      product.m == null && el('p', { class: 'rx-hint' }, 'Dosage par comprimé à saisir après l’ajout.'),
+      el('ul', { class: 'rx-packs' }, product.k.map((pack) => el('li', {},
+        el('span', {}, packText(pack, product.u)),
+        button('Ajouter', () => { message = onPick(product, pack); run(); }, 'btn-small'),
+      ))),
+    );
+  };
+
+  input.addEventListener('input', run);
+  loadRxIndex().then((loaded) => { data = loaded; run(); }).catch(() => {
+    input.hidden = true;
+    status.textContent = 'La recherche Med’Vet n’est pas disponible : ajoutez le médicament à la main.';
+  });
+  return { root, focus: () => input.focus() };
+}
+
+// --- ajout d'un médicament au catalogue ---------------------------------------------------------
+
+function addDrugFromProduct(product, pack) {
+  const brand = fold(product.b);
+  const existing = state.rx.drugs.find((d) => fold(d.name) === brand);
+  if (existing) {
+    const f = formatFromProduct(product, pack);
+    const exists = existing.formats.some((g) => g.name === f.name && g.perBlister === f.perBlister && g.blisters === f.blisters);
+    if (!exists) existing.formats.push(f);
+    saveRx();
+    showRxCard(existing);
+    return exists ? `${f.name} est déjà dans « ${existing.name} ».` : `${f.name} ajouté à « ${existing.name} ».`;
+  }
+  const drug = drugFromProduct(product, pack);
+  state.rx.drugs.push(drug);
+  saveRx();
+  showRxCard(drug);
+  return `« ${drug.name} » ajouté : renseignez maintenant sa posologie.`;
+}
+
+// Affiche la carte, ouvre son éditeur et la ramène à l'écran.
+function showRxCard(drug) {
+  if (state.species !== 'all' && drug.species && drug.species !== state.species) {
+    state.species = 'all';
+    storeSet(SPECIES_KEY, 'all');
+    document.querySelector('input[name="species"][value="all"]').checked = true;
+  }
+  renderRx();
+  const card = rxCard(drug);
+  card.open(true);
+  card.root.scrollIntoView({ block: 'nearest', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
+}
+
+function addBlankDrug() {
+  const drug = normalizeDrug({ name: '', formats: [{}] });
+  state.rx.drugs.push(drug);
+  saveRx();
+  showRxCard(drug);
+  rxCard(drug).root.querySelector('.rx-form input')?.focus();
+}
+
+// --- construction de la vue -----------------------------------------------------------------
+
+function rxPrefField(label, key, options, format) {
+  const node = el('select', { class: 'pick' },
+    options.map(([value, text]) => el('option', { value, selected: String(value) === String(state.rx.prefs[key]) }, text)));
+  node.addEventListener('change', () => {
+    state.rx.prefs[key] = format ? format(node.value) : node.value;
+    saveRxPrefs();
+    syncRxPrefs();
+    renderRx();
+  });
+  return el('label', { class: 'pref-field' }, el('span', { class: 'field-label' }, label), node);
+}
+
+let rxPrefsNow;
+const DISPENSE_LABEL = { box: 'boîte entière', blister: 'plaquette entière', unit: 'à l’unité' };
+function syncRxPrefs() {
+  const p = state.rx.prefs;
+  rxPrefsNow.textContent = `±${Math.round(p.tol * 100)} % · ${DISPENSE_LABEL[p.dispense]}`;
+}
+
+function buildRx() {
+  rxBuilt = true;
+
+  // durée du traitement : saisie libre ou raccourcis
+  rxDaysInput = el('input', { id: 'rx-days', type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: 3, placeholder: '0' });
+  rxDaysChips = DAY_CHOICES.map((n) => el('button', { type: 'button', class: 'dchip', 'aria-pressed': 'false', onclick: () => {
+    state.rx.days = state.rx.days === n ? null : n;
+    syncRxDays();
+    renderRx();
+  } }, String(n)));
+  syncRxDays = () => {
+    const days = state.rx.days;
+    if (days !== null || document.activeElement !== rxDaysInput) rxDaysInput.value = days === null ? '' : String(days);
+    rxDaysInput.setAttribute('aria-invalid', 'false');
+    rxDaysChips.forEach((chip, i) => chip.setAttribute('aria-pressed', String(DAY_CHOICES[i] === days)));
+  };
+  rxDaysInput.addEventListener('input', () => {
+    const text = rxDaysInput.value.trim();
+    const n = /^\d{1,3}$/.test(text) ? Number(text) : null;
+    state.rx.days = n > 0 ? n : null;
+    rxDaysInput.setAttribute('aria-invalid', String(text !== '' && !state.rx.days));
+    rxDaysChips.forEach((chip, i) => chip.setAttribute('aria-pressed', String(DAY_CHOICES[i] === state.rx.days)));
+    renderRx();
+  });
+  rxDaysInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') rxDaysInput.blur(); });
+
+  rxPrefsNow = el('span', { class: 'prefs-now' });
+  const prefs = el('details', { class: 'prefs rx-prefs' },
+    el('summary', {}, 'Réglages ', rxPrefsNow),
+    el('div', { class: 'prefs-body' },
+      el('div', { class: 'rx-prefs-grid' },
+        rxPrefField('Tolérance sur la dose', 'tol', TOLERANCES.map((t) => [t, `±${Math.round(t * 100)} %`]), Number),
+        rxPrefField('Découpe maximale', 'split', [['none', 'Comprimés entiers'], ['half', 'Moitiés'], ['quarter', 'Quarts']]),
+        rxPrefField('Remise au client', 'dispense', [['box', 'Boîte entière'], ['blister', 'Plaquette entière'], ['unit', 'Comprimés à l’unité']]),
+        rxPrefField('Classement des dosages', 'rank', [['waste', 'Moins de reste'], ['cost', 'Moins cher'], ['pills', 'Moins de comprimés'], ['exact', 'Dose la plus juste']]),
+      ),
+      el('p', { class: 'prefs-note' }, `La tolérance est l’écart accepté avec la dose cible (une dose max n’est jamais dépassée). Un comprimé non sécable n’est jamais coupé. Au plus ${MAX_PER_INTAKE} comprimés par prise. « Moins cher » demande le prix de la boîte.`),
+    ),
+  );
+  syncRxPrefs();
+
+  // ajout d'un médicament : recherche Med'Vet ou saisie libre
+  let search;
+  rxAddPanel = el('div', { class: 'rx-add', hidden: true });
+  rxAddButton = button('Ajouter un médicament', () => {
+    rxAddPanel.hidden = !rxAddPanel.hidden;
+    rxAddButton.setAttribute('aria-expanded', String(!rxAddPanel.hidden));
+    if (!search) {
+      search = rxSearch(addDrugFromProduct);
+      rxAddPanel.replaceChildren(
+        el('h3', { class: 'rx-sub' }, 'Nouveau médicament'),
+        search.root,
+        button('Saisir à la main', addBlankDrug, 'btn-small'),
+      );
+    }
+    if (!rxAddPanel.hidden) search.focus();
+  }, 'btn-primary');
+  rxAddButton.setAttribute('aria-expanded', 'false');
+
+  rxListEl = el('div', { class: 'rx-list' });
+  rxRoot.replaceChildren(
+    el('div', { class: 'rx-top' },
+      el('div', { class: 'rx-days' },
+        el('label', { class: 'days-box', for: 'rx-days' },
+          el('span', { class: 'days-label' }, 'Durée'),
+          rxDaysInput,
+          el('span', { class: 'days-unit' }, 'jours'),
+        ),
+        el('div', { class: 'dchips', role: 'group', 'aria-label': 'Durées courantes' }, rxDaysChips),
+      ),
+      prefs,
+      el('div', { class: 'rx-bar' }, rxAddButton),
+      rxAddPanel,
+    ),
+    rxListEl,
+  );
+  syncRxDays();
+}
+
+function renderRx() {
+  if (!rxBuilt) buildRx();
+  const shown = state.rx.drugs.filter(matchesSpecies);
+  const cards = shown.map((drug) => rxCard(drug));
+  cards.forEach((card) => card.refresh());
+  if (!state.rx.drugs.length) {
+    rxListEl.replaceChildren(el('p', { class: 'empty' }, 'Le catalogue est vide. Ajoutez les médicaments que la clinique remet : cherchez-les dans Med’Vet ou saisissez-les à la main.'));
+  } else if (!shown.length) {
+    rxListEl.replaceChildren(el('p', { class: 'empty' }, 'Aucun médicament du catalogue pour cette espèce.'));
+  } else {
+    rxListEl.replaceChildren(...cards.map((card) => card.root));
+  }
+}
+
+// --- passage d'une vue à l'autre ---------------------------------------------------------------
+
+function setView(view) {
+  state.view = view;
+  document.body.dataset.view = view;
+  main.hidden = view === 'rx';
+  rxRoot.hidden = view !== 'rx';
+  pageHeading.textContent = HEADINGS[view];
+  if (view === 'rx') renderRx();
+  else render();
+  window.scrollTo({ top: 0 });
+}
+
+document.querySelectorAll('input[name="view"]').forEach((radio) => {
+  radio.addEventListener('change', () => { if (radio.checked) setView(radio.value); });
+});
+
 // --- thème : clair par défaut, sombre au choix (mémorisé) -------------------
 
 function applyTheme(theme) {
@@ -760,11 +1308,16 @@ document.querySelectorAll('input[name="species"]').forEach((radio) => {
   radio.addEventListener('change', () => {
     state.species = radio.value;
     storeSet(SPECIES_KEY, state.species);
-    renderView();
+    renderCurrent();
   });
 });
 
 editToggle.addEventListener('click', () => setEditing(!state.editing));
+
+function renderCurrent() {
+  if (state.view === 'rx') renderRx();
+  else if (!state.editing) renderView();
+}
 
 function render() {
   if (state.editing) {

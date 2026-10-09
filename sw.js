@@ -1,6 +1,6 @@
 // Service worker : l'appli fonctionne hors connexion.
 // Incrémenter CACHE à chaque déploiement pour forcer la mise à jour des fichiers.
-const CACHE = 'injection-v15';
+const CACHE = 'injection-v16';
 
 // Les animations de l'easter egg vivent dans un cache à part : elles ne changent pas, donc
 // elles ne sont pas retéléchargées à chaque nouvelle version de l'appli.
@@ -12,6 +12,7 @@ const ASSETS = [
   'style.css',
   'app.js',
   'data.js',
+  'rx.js',
   'section-icons.js',
   'animals.js',
   'manifest.webmanifest',

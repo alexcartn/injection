@@ -82,6 +82,14 @@
   </div>
   </div>
 
+  <div class="view-row" id="view-row">
+    <fieldset class="seg seg-view">
+      <legend class="sr-only">Affichage</legend>
+      <label><input type="radio" name="view" value="doses" checked><span>Injections</span></label>
+      <label><input type="radio" name="view" value="rx"><span>Ordonnance</span></label>
+    </fieldset>
+  </div>
+
   <p id="hint" class="hint">Saisissez le poids de l'animal : toutes les doses se calculent.</p>
 
   <details class="prefs" id="prefs">
@@ -156,6 +164,9 @@
   </header>
 
   <main id="main"></main>
+
+  <!-- Ordonnance : construit par app.js -->
+  <section class="rx" id="rx" aria-label="Ordonnance" hidden></section>
 
   <nav class="dock" id="dock" aria-label="Aller à une section" hidden></nav>
 
