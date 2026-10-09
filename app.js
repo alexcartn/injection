@@ -1,10 +1,8 @@
-import { MODELS, DEFAULT_MODEL } from './data.js';
+import { DEFAULT_SECTIONS } from './data.js';
 import { ICONS } from './section-icons.js';
 import { ANIMALS } from './animals.js';
 
-// Chaque modèle garde ses propres doses modifiées. La clé du modèle d'origine ne change pas.
-const SECTIONS_KEY = { hospit: 'injection:sections:v1', ambu: 'injection:sections:ambu:v1' };
-const MODEL_KEY = 'injection:model';
+const STORE_KEY = 'injection:sections:v1';
 const SPECIES_KEY = 'injection:species';
 const SPECIES_LABEL = { CN: 'Chien', CT: 'Chat' };
 const UNITS = ['mL', 'mL/h'];
@@ -75,12 +73,16 @@ function storeDelete(key) {
   try { localStorage.removeItem(key); } catch { /* stockage indisponible */ }
 }
 
+// Restes de la version publiée brièvement avec un second modèle : on les supprime.
+storeDelete('injection:model');
+storeDelete('injection:sections:ambu:v1');
+
 // Données enregistrées avant l'arrivée des icônes et de la précision d'affichage : on rend leurs
 // valeurs d'origine aux sections d'origine. Un réglage volontairement changé est enregistré,
 // donc jamais écrasé (icône retirée = chaîne vide).
-function withDefaults(sections, model) {
+function withDefaults(sections) {
   for (const section of sections) {
-    const original = MODELS[model].sections.find((d) => d.title === section.title);
+    const original = DEFAULT_SECTIONS.find((d) => d.title === section.title);
     if (!original) continue;
     if (!('icon' in section) && original.icon) section.icon = original.icon;
     if (!('decimals' in section) && original.decimals) section.decimals = original.decimals;
@@ -88,20 +90,15 @@ function withDefaults(sections, model) {
   return sections;
 }
 
-function loadModel() {
-  const saved = storeGet(MODEL_KEY);
-  return saved in MODELS ? saved : DEFAULT_MODEL;
-}
-
-function loadSections(model) {
-  const raw = storeGet(SECTIONS_KEY[model]);
+function loadSections() {
+  const raw = storeGet(STORE_KEY);
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.every((s) => s && Array.isArray(s.items))) return withDefaults(parsed, model);
+      if (Array.isArray(parsed) && parsed.every((s) => s && Array.isArray(s.items))) return withDefaults(parsed);
     } catch { /* données corrompues : on repart des valeurs d'origine */ }
   }
-  return structuredClone(MODELS[model].sections);
+  return structuredClone(DEFAULT_SECTIONS);
 }
 
 function loadSpecies() {
@@ -111,27 +108,21 @@ function loadSpecies() {
 
 // Réglages de l'appareil : arrondi à la seringue (mL) et type de set de perfusion (gouttes/mL).
 function loadPrefs() {
-  const prefs = { round: 0, set: 20, printOff: { hospit: [], ambu: [] }, printNotes: true };
+  const prefs = { round: 0, set: 20, printOff: [], printNotes: true };
   try {
     const saved = JSON.parse(storeGet(PREFS_KEY) || '{}');
     if (ROUND_STEPS.includes(saved.round)) prefs.round = saved.round;
     if (DRIP_SETS.includes(saved.set)) prefs.set = saved.set;
-    const titles = (list) => list.filter((t) => typeof t === 'string');
-    // ancien format : un seul tableau, qui concernait la feuille hospit
-    if (Array.isArray(saved.printOff)) prefs.printOff.hospit = titles(saved.printOff);
-    else if (saved.printOff && typeof saved.printOff === 'object') {
-      for (const model of Object.keys(MODELS)) if (Array.isArray(saved.printOff[model])) prefs.printOff[model] = titles(saved.printOff[model]);
-    }
+    // Une version publiée brièvement rangeait ce réglage par modèle : on reprend celui d'Hospit.
+    const off = Array.isArray(saved.printOff) ? saved.printOff : saved.printOff?.hospit;
+    if (Array.isArray(off)) prefs.printOff = off.filter((t) => typeof t === 'string');
     if (typeof saved.printNotes === 'boolean') prefs.printNotes = saved.printNotes;
   } catch { /* réglages corrompus : valeurs par défaut */ }
   return prefs;
 }
 
-const initialModel = loadModel();
-
 const state = {
-  model: initialModel,
-  sections: loadSections(initialModel),
+  sections: loadSections(),
   species: loadSpecies(),
   prefs: loadPrefs(),
   weight: null,
@@ -142,7 +133,7 @@ const state = {
   openEdit: new Set(), // sections dépliées dans l'éditeur
 };
 
-const save = () => storeSet(SECTIONS_KEY[state.model], JSON.stringify(state.sections));
+const save = () => storeSet(STORE_KEY, JSON.stringify(state.sections));
 const savePrefs = () => storeSet(PREFS_KEY, JSON.stringify(state.prefs));
 
 // --- utilitaires ------------------------------------------------------------
@@ -540,10 +531,10 @@ function removeSection(section) {
 }
 
 function resetAll() {
-  if (!confirm(`Rétablir toutes les doses d’origine du modèle « ${MODELS[state.model].label} » ? Ses modifications seront perdues (l’autre modèle n’est pas touché).`)) return;
-  state.sections = structuredClone(MODELS[state.model].sections);
+  if (!confirm('Rétablir toutes les doses d’origine ? Les modifications faites dans l’appli seront perdues.')) return;
+  state.sections = structuredClone(DEFAULT_SECTIONS);
   state.openEdit.clear();
-  storeDelete(SECTIONS_KEY[state.model]);
+  storeDelete(STORE_KEY);
   render();
 }
 
@@ -551,7 +542,6 @@ function setEditing(on) {
   state.editing = on;
   document.body.classList.toggle('editing', on);
   editToggle.textContent = on ? 'Terminé' : 'Modifier';
-  editNote.hidden = !on;
   render();
   window.scrollTo({ top: 0 });
 }
@@ -610,35 +600,6 @@ heart.addEventListener('click', () => {
   egg.scrollIntoView({ block: 'nearest', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
 });
 
-// --- choix du modèle de feuille (hospit / ambulatoire) ----------------------------------
-
-const modelHeading = document.querySelector('h1');
-const editNote = document.getElementById('edit-note');
-
-// Le titre de la page et le bandeau d'édition disent toujours quel modèle est affiché ou modifié.
-function syncModelUi() {
-  const model = MODELS[state.model];
-  modelHeading.textContent = model.title;
-  editNote.textContent = `Vous modifiez le modèle « ${model.label} ». L’autre modèle n’est pas touché.`;
-  document.querySelectorAll('input[name="model"]').forEach((radio) => { radio.checked = radio.value === state.model; });
-}
-
-function setModel(model) {
-  if (model === state.model || !(model in MODELS)) return;
-  state.model = model;
-  storeSet(MODEL_KEY, model);
-  state.sections = loadSections(model);
-  state.done.clear(); // les médicaments cochés appartenaient à l'autre modèle ; le poids, le nom et les notes restent
-  state.openEdit.clear();
-  syncModelUi();
-  render();
-}
-
-document.querySelectorAll('input[name="model"]').forEach((radio) => {
-  radio.addEventListener('change', () => setModel(radio.value));
-});
-syncModelUi();
-
 // --- poids et filtre espèce -------------------------------------------------
 
 function updateWeight() {
@@ -690,7 +651,7 @@ document.querySelector('.weight').addEventListener('click', (e) => {
 
 // --- fiche d'hospitalisation (impression) ------------------------------------------
 
-const isPrinted = (section) => !state.prefs.printOff[state.model].includes(section.title);
+const isPrinted = (section) => !state.prefs.printOff.includes(section.title);
 
 const sheetNotes = document.getElementById('sheet-notes');
 const syncNotes = () => {
@@ -705,10 +666,10 @@ function buildPrintChips() {
   const chips = state.sections.map((section) => {
     const input = el('input', { type: 'checkbox', checked: isPrinted(section) });
     input.addEventListener('change', () => {
-      const off = new Set(state.prefs.printOff[state.model]);
+      const off = new Set(state.prefs.printOff);
       if (input.checked) off.delete(section.title);
       else off.add(section.title);
-      state.prefs.printOff[state.model] = [...off];
+      state.prefs.printOff = [...off];
       savePrefs();
       renderView();
     });
