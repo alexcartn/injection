@@ -1,0 +1,9 @@
+Animations des fichiers .webp de ce dossier
+
+Source : Noto Emoji Animation, © Google
+https://googlefonts.github.io/noto-emoji-animation/
+Licence : Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/legalcode
+
+Modifications : chaque animation a été réduite à 160 x 160 pixels, ramenée à une
+image sur trois et recompressée au format WebP animé pour alléger l'application.

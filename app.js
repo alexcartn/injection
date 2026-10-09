@@ -1,5 +1,6 @@
 import { DEFAULT_SECTIONS } from './data.js';
 import { ICONS } from './section-icons.js';
+import { ANIMALS, CAPTIONS } from './animals.js';
 
 const STORE_KEY = 'injection:sections:v1';
 const SPECIES_KEY = 'injection:species';
@@ -508,6 +509,49 @@ function setEditing(on) {
   render();
   window.scrollTo({ top: 0 });
 }
+
+// --- easter egg : le coeur du pied de page ------------------------------------------
+
+const heart = document.getElementById('heart');
+const egg = document.getElementById('egg');
+const eggImg = document.getElementById('egg-img');
+const eggEmoji = document.getElementById('egg-emoji');
+const eggCap = document.getElementById('egg-cap');
+let lastAnimal = -1;
+let lastCaption = -1;
+
+// Tirage au hasard sans jamais répéter le précédent.
+function pickNew(count, last) {
+  let i;
+  do i = Math.floor(Math.random() * count);
+  while (count > 1 && i === last);
+  return i;
+}
+
+heart.addEventListener('click', () => {
+  lastAnimal = pickNew(ANIMALS.length, lastAnimal);
+  lastCaption = pickNew(CAPTIONS.length, lastCaption);
+  const animal = ANIMALS[lastAnimal];
+
+  if (reduceMotion.matches) {
+    // mouvement réduit : un émoji fixe à la place de l'animation
+    eggImg.hidden = true;
+    eggEmoji.hidden = false;
+    eggEmoji.textContent = animal.emoji;
+  } else {
+    eggEmoji.hidden = true;
+    eggImg.hidden = false;
+    eggImg.alt = animal.label;
+    eggImg.src = `animals/${animal.file}`;
+  }
+  eggCap.textContent = CAPTIONS[lastCaption];
+
+  egg.hidden = false;
+  egg.classList.remove('pop');
+  void egg.offsetWidth; // relance l'animation d'apparition
+  egg.classList.add('pop');
+  egg.scrollIntoView({ block: 'nearest', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
+});
 
 // --- poids et filtre espèce -------------------------------------------------
 
