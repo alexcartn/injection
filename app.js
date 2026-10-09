@@ -30,6 +30,10 @@ const hint = document.getElementById('hint');
 const roundSelect = document.getElementById('round');
 const roundNote = document.getElementById('round-note');
 const prefsNow = document.getElementById('prefs-now');
+const petInput = document.getElementById('pet-name');
+const printBtn = document.getElementById('print');
+const printNote = document.getElementById('print-note');
+const printList = document.getElementById('print-sections');
 const dock = document.getElementById('dock');
 const chrome = document.getElementById('chrome');
 const brandRow = document.querySelector('.top');
@@ -66,11 +70,13 @@ function loadSpecies() {
 
 // Réglages de l'appareil : arrondi à la seringue (mL) et type de set de perfusion (gouttes/mL).
 function loadPrefs() {
-  const prefs = { round: 0, set: 20 };
+  const prefs = { round: 0, set: 20, printOff: [], printNotes: true };
   try {
     const saved = JSON.parse(storeGet(PREFS_KEY) || '{}');
     if (ROUND_STEPS.includes(saved.round)) prefs.round = saved.round;
     if (DRIP_SETS.includes(saved.set)) prefs.set = saved.set;
+    if (Array.isArray(saved.printOff)) prefs.printOff = saved.printOff.filter((t) => typeof t === 'string');
+    if (typeof saved.printNotes === 'boolean') prefs.printNotes = saved.printNotes;
   } catch { /* réglages corrompus : valeurs par défaut */ }
   return prefs;
 }
@@ -80,6 +86,7 @@ const state = {
   species: loadSpecies(),
   prefs: loadPrefs(),
   weight: null,
+  petName: '', // comme le poids, jamais mémorisé : propre au patient en cours
   editing: false,
   done: new Set(), // médicaments cochés "prélevés" ; vidé à chaque nouveau poids
   openEdit: new Set(), // sections dépliées dans l'éditeur
@@ -176,7 +183,7 @@ function renderView() {
     if (!items.length) continue;
     shown.push(section);
     cards.push(
-      el('section', { class: 'card' },
+      el('section', { class: isPrinted(section) ? 'card' : 'card print-off' },
         el('h2', {}, el('span', {}, section.title), el('span', { class: 'unit' }, section.unit)),
         section.unit === 'mL/h' && dripPicker(),
         el('div', { class: 'rows' }, rowsFor(items, section)),
@@ -477,6 +484,16 @@ function updateWeight() {
   weightClear.hidden = text === '';
   hint.hidden = text !== '';
 
+  // un poids vidé = patient suivant : le nom du précédent ne doit jamais se retrouver sur sa fiche
+  if (text === '' && state.petName) {
+    state.petName = '';
+    petInput.value = '';
+  }
+  printBtn.disabled = !state.weight;
+  printNote.textContent = state.weight
+    ? 'Dans la fenêtre d\u2019impression, « Enregistrer au format PDF » permet de la garder.'
+    : 'Saisissez d\u2019abord le poids.';
+
   let message = '';
   if (invalid) message = 'Poids invalide.';
   else if (state.weight > WEIGHT_WARN_ABOVE) message = `Poids élevé (${fmtWeight.format(state.weight)} kg) : vérifier la saisie.`;
@@ -499,6 +516,73 @@ weightClear.addEventListener('click', () => {
 document.querySelector('.weight').addEventListener('click', (e) => {
   if (!weightClear.contains(e.target)) weightInput.focus();
 });
+
+// --- fiche d'hospitalisation (impression) ------------------------------------------
+
+const isPrinted = (section) => !state.prefs.printOff.includes(section.title);
+
+const sheetNotes = document.getElementById('sheet-notes');
+const syncNotes = () => sheetNotes.classList.toggle('print-off', !state.prefs.printNotes);
+
+// Une case par section : décochée = absente de la fiche imprimée (choix mémorisé).
+// La dernière case règle la zone de notes à remplir à la main.
+function buildPrintChips() {
+  const chips = state.sections.map((section) => {
+    const input = el('input', { type: 'checkbox', checked: isPrinted(section) });
+    input.addEventListener('change', () => {
+      const off = new Set(state.prefs.printOff);
+      if (input.checked) off.delete(section.title);
+      else off.add(section.title);
+      state.prefs.printOff = [...off];
+      savePrefs();
+      renderView();
+    });
+    return el('label', { class: 'pchip' }, input, el('span', {}, section.title || 'Sans titre'));
+  });
+
+  const notes = el('input', { type: 'checkbox', checked: state.prefs.printNotes });
+  notes.addEventListener('change', () => {
+    state.prefs.printNotes = notes.checked;
+    savePrefs();
+    syncNotes();
+  });
+  chips.push(el('label', { class: 'pchip pchip-notes' }, notes, el('span', {}, 'Zone de notes')));
+
+  printList.replaceChildren(...chips);
+  syncNotes();
+}
+
+const setText = (id, text) => { document.getElementById(id).textContent = text; };
+const speciesText = () => ({ CN: 'Chien', CT: 'Chat' }[state.species] ?? 'Chien et chat');
+const pad2 = (n) => String(n).padStart(2, '0');
+
+// Remplit l'en-tête de la fiche. Appelé juste avant l'impression, y compris avec Ctrl+P.
+function fillSheet() {
+  const now = new Date();
+  setText('sh-name', state.petName);
+  setText('sh-species', speciesText());
+  setText('sh-weight', state.weight ? `${fmtWeight.format(state.weight)} kg` : '');
+  setText('sh-date', now.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' }));
+
+  const meta = [];
+  if (state.prefs.round) meta.push(`Volumes arrondis à ${fmtCoef.format(state.prefs.round)} mL`);
+  if (document.querySelector('.card:not(.print-off) .set')) meta.push(`Set de perfusion : ${state.prefs.set} gouttes/mL`);
+  meta.push('Doses calculées par l\u2019appli : à vérifier avant chaque administration.');
+  setText('sh-meta', meta.join(' · '));
+
+  // le titre du document devient le nom de fichier proposé pour un PDF
+  const stamp = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  const who = state.petName || 'hospitalisation';
+  const kg = state.weight ? ` ${fmtWeight.format(state.weight)} kg` : '';
+  document.title = `Fiche ${who}${kg} ${stamp}`;
+}
+
+const pageTitle = document.title;
+window.addEventListener('beforeprint', fillSheet);
+window.addEventListener('afterprint', () => { document.title = pageTitle; });
+
+petInput.addEventListener('input', () => { state.petName = petInput.value.trim(); });
+printBtn.addEventListener('click', () => { fillSheet(); window.print(); });
 
 // --- arrondi à la seringue ------------------------------------------------------
 
@@ -545,8 +629,12 @@ document.querySelectorAll('input[name="species"]').forEach((radio) => {
 editToggle.addEventListener('click', () => setEditing(!state.editing));
 
 function render() {
-  if (state.editing) renderEdit();
-  else renderView();
+  if (state.editing) {
+    renderEdit();
+  } else {
+    renderView();
+    buildPrintChips();
+  }
 }
 
 render();

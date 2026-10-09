@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Injections et perf hospit</title>
-  <meta name="description" content="Calcul des doses d'injection et de perfusion selon le poids de l'animal.">
+  <title>Natura'Vet : injections et perf hospit</title>
+  <meta name="description" content="Natura'Vet, vétérinaire à Mourmelon-le-Grand : calcul des doses d'injection et de perfusion selon le poids de l'animal.">
   <meta name="theme-color" content="#f8f7ee">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -45,7 +45,10 @@
           <line x1="398" y1="222" x2="398" y2="290" stroke-width="22"/>
         </g>
       </svg>
-      <h1>Injections et perf hospit</h1>
+      <div class="brand-text">
+        <p class="brand-clinic">Natura'Vet</p>
+        <h1>Injections et perf hospit</h1>
+      </div>
     </div>
     <div class="top-actions">
       <button type="button" id="theme-toggle" class="icon-btn" aria-pressed="false" aria-label="Mode sombre" title="Mode sombre">
@@ -82,25 +85,85 @@
   <p id="hint" class="hint">Saisissez le poids de l'animal : toutes les doses se calculent.</p>
 
   <details class="prefs" id="prefs">
-    <summary>Réglages <span class="prefs-now" id="prefs-now">arrondi : aucun</span></summary>
+    <summary>Fiche et réglages <span class="prefs-now" id="prefs-now">arrondi : aucun</span></summary>
     <div class="prefs-body">
-      <label for="round">Arrondi à la seringue</label>
-      <select id="round" class="pick">
-        <option value="0">Aucun</option>
-        <option value="0.01">0,01 mL</option>
-        <option value="0.05">0,05 mL</option>
-        <option value="0.1">0,1 mL</option>
-      </select>
-      <span id="round-note" class="prefs-note" hidden>Si l'arrondi change la dose de plus de 10 %, la valeur exacte est conservée.</span>
+      <section class="pref-group" aria-labelledby="pg-sheet">
+        <h3 id="pg-sheet">Fiche d'hospitalisation</h3>
+        <label class="pref-field">
+          <span class="field-label">Nom de l'animal</span>
+          <input id="pet-name" class="text" type="text" autocomplete="off" maxlength="60" placeholder="Facultatif : sinon à écrire à la main">
+        </label>
+        <fieldset class="pchips">
+          <legend>Sections à imprimer</legend>
+          <div id="print-sections" class="pchips-list"></div>
+        </fieldset>
+        <div class="pref-row">
+          <button type="button" id="print" class="btn btn-primary" disabled>Imprimer la fiche</button>
+          <span class="prefs-note" id="print-note">Saisissez d'abord le poids.</span>
+        </div>
+      </section>
+
+      <section class="pref-group" aria-labelledby="pg-round">
+        <h3 id="pg-round">Arrondi à la seringue</h3>
+        <label for="round" class="sr-only">Arrondi à la seringue</label>
+        <select id="round" class="pick">
+          <option value="0">Aucun</option>
+          <option value="0.01">0,01 mL</option>
+          <option value="0.05">0,05 mL</option>
+          <option value="0.1">0,1 mL</option>
+        </select>
+        <span id="round-note" class="prefs-note" hidden>Si l'arrondi change la dose de plus de 10 %, la valeur exacte est conservée.</span>
+      </section>
     </div>
   </details>
+
+  <!-- Visible uniquement à l'impression : en-tête de la fiche -->
+  <header class="sheet-head" id="sheet-head">
+    <div class="sh-brand">
+      <svg class="mark" viewBox="84 84 344 344" width="34" height="34" aria-hidden="true" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <g transform="rotate(-45 256 256) translate(4 0)">
+          <line x1="96" y1="256" x2="150" y2="256" stroke-width="16"/>
+          <rect x="150" y="238" width="22" height="36" rx="4" fill="currentColor" stroke="none"/>
+          <rect x="172" y="216" width="170" height="80" rx="12" stroke-width="22"/>
+          <g class="mark-ticks" stroke-width="14">
+            <line x1="212" y1="216" x2="212" y2="244"/>
+            <line x1="248" y1="216" x2="248" y2="244"/>
+            <line x1="284" y1="216" x2="284" y2="244"/>
+            <line x1="320" y1="216" x2="320" y2="244"/>
+          </g>
+          <line x1="342" y1="204" x2="342" y2="308" stroke-width="22"/>
+          <line x1="342" y1="256" x2="398" y2="256" stroke-width="22"/>
+          <line x1="398" y1="222" x2="398" y2="290" stroke-width="22"/>
+        </g>
+      </svg>
+      <div>
+        <p class="sh-clinic">Natura'Vet</p>
+        <p class="sh-place">Vétérinaire à Mourmelon-le-Grand</p>
+      </div>
+      <p class="sh-date" id="sh-date"></p>
+    </div>
+    <h2 class="sh-title">Fiche d'hospitalisation</h2>
+    <dl class="sh-fields">
+      <div class="sh-name"><dt>Nom</dt><dd id="sh-name"></dd></div>
+      <div><dt>Espèce</dt><dd id="sh-species"></dd></div>
+      <div><dt>Poids</dt><dd id="sh-weight"></dd></div>
+    </dl>
+    <p class="sh-meta" id="sh-meta"></p>
+  </header>
 
   <main id="main"></main>
 
   <nav class="dock" id="dock" aria-label="Aller à une section" hidden></nav>
 
+  <!-- Visible uniquement à l'impression : lignes pour écrire à la main -->
+  <section class="sheet-notes" id="sheet-notes">
+    <h3>Notes et observations</h3>
+    <div class="sn-lines"><i></i><i></i><i></i><i></i><i></i></div>
+  </section>
+
   <footer id="foot">
     <p class="disclaimer">Aide au calcul. Les doses affichées sont celles enregistrées dans l'appli : à vérifier avant chaque injection.</p>
+    <p class="clinic-line">Natura'Vet · Vétérinaire à Mourmelon-le-Grand</p>
   </footer>
 
   <script type="module" src="app.js"></script>

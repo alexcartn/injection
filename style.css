@@ -162,11 +162,19 @@ body {
 }
 .mark-ticks { stroke: var(--accent); }
 
-h1 {
+/* signature : la clinique en capitales condensées, l'outil en petit dessous */
+.brand-text { min-width: 0; }
+.brand-clinic {
   margin: 0;
-  font: 600 var(--t-sm) / 1.15 var(--font-num);
-  letter-spacing: 0.1em;
+  font: 700 var(--t-md) / 1 var(--font-num);
+  letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+h1 {
+  margin: 3px 0 0;
+  color: var(--ink-2);
+  font: 500 var(--t-xs) / 1.2 var(--font-ui);
+  letter-spacing: 0.02em;
 }
 
 .top-actions {
@@ -375,17 +383,100 @@ h1 {
   text-transform: none;
 }
 .prefs-body {
+  display: grid;
+  gap: var(--s-5);
+  max-width: 40rem;
+  padding: var(--s-1) 0 var(--s-4);
+}
+.pref-group {
+  display: grid;
+  gap: var(--s-3);
+  justify-items: start;
+}
+.pref-group h3 {
+  margin: 0;
+  padding-bottom: var(--s-1);
+  border-bottom: 1px solid var(--rule);
+  width: 100%;
+  font: 600 var(--t-xs) / 1.2 var(--font-num);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.pref-field {
+  display: grid;
+  gap: var(--s-1);
+  width: 100%;
+}
+.pref-field .text {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border: 2px solid var(--rule-strong);
+  border-radius: var(--r);
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 var(--t-sm) / 1.4 var(--font-ui);
+}
+.pref-field .text:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.pref-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--s-2) var(--s-3);
-  padding: var(--s-1) 0 var(--s-3);
 }
 .prefs label,
 .set label {
   font: 600 var(--t-sm) / 1.2 var(--font-num);
   letter-spacing: 0.04em;
 }
+
+/* choix des sections à imprimer : une puce par section */
+.pchips {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  width: 100%;
+}
+.pchips legend {
+  padding: 0 0 var(--s-2);
+  font: 600 var(--t-sm) / 1.2 var(--font-num);
+  letter-spacing: 0.04em;
+}
+.pchips-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.pchip {
+  position: relative;
+  display: flex;
+}
+.pchip input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.pchip span {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border: 2px solid var(--rule-strong);
+  border-radius: var(--r);
+  color: var(--ink-2);
+  font: 600 var(--t-sm) / 1 var(--font-ui);
+}
+.pchip input:checked + span {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+.pchip input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: 2px; }
 .prefs-note {
   flex-basis: 100%;
   color: var(--ink-2);
@@ -801,6 +892,13 @@ footer {
   margin: 0 auto;
   padding: 0 max(var(--s-4), env(safe-area-inset-right)) calc(var(--s-6) + env(safe-area-inset-bottom)) max(var(--s-4), env(safe-area-inset-left));
 }
+.clinic-line {
+  margin: var(--s-3) 0 0;
+  color: var(--ink-2);
+  font: 600 var(--t-xs) / 1.2 var(--font-num);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
 .disclaimer {
   margin: 0;
   padding-top: var(--s-3);
@@ -809,6 +907,11 @@ footer {
   font-size: var(--t-xs);
   max-width: 65ch;
 }
+
+/* --- fiche d'hospitalisation : invisible à l'écran ------------------------------ */
+
+.sheet-head,
+.sheet-notes { display: none; }
 
 /* --- barre de sections : téléphone et petite tablette ------------------------- */
 
@@ -877,4 +980,153 @@ body:has(#weight:focus) .dock { display: none; }
   .seg { order: 3; flex: 0 1 24rem; }
   .top-actions { order: 4; margin-left: auto; }
   .warn { order: 5; flex-basis: 100%; margin: 0; }
+}
+
+/* --- impression : fiche d'hospitalisation A4, lisible en noir et blanc ---------- */
+
+@media print {
+  @page { size: A4 portrait; margin: 12mm; }
+
+  /* toujours clair et noir sur blanc, quel que soit le thème de l'écran */
+  :root,
+  :root[data-theme="dark"] {
+    color-scheme: light;
+    --paper: #fff;
+    --paper-2: #fff;
+    --ink: #000;
+    --ink-2: #222;
+    --rule: #999;
+    --rule-strong: #000;
+    --dots: #555;
+    --accent: #000;
+    --chien: #000;
+    --chien-wash: #fff;
+    --chat: #000;
+    --chat-wash: #fff;
+    --warn-bg: #fff;
+    --warn-ink: #000;
+  }
+
+  html, body { background: #fff; }
+  body {
+    padding: 0 !important;
+    color: #000;
+    font-size: 10pt;
+    line-height: 1.3;
+  }
+
+  /* tout ce qui sert à l'écran disparaît */
+  .chrome, .hint, .prefs, .dock, .set, .clear, footer, .warn { display: none !important; }
+  .print-off { display: none !important; }
+
+  /* en-tête de la fiche */
+  .sheet-head { display: block; margin-bottom: 4.5mm; }
+  .sh-brand {
+    display: flex;
+    align-items: center;
+    gap: 3mm;
+    padding-bottom: 2.5mm;
+    border-bottom: 2pt solid #000;
+  }
+  .sh-brand .mark { width: 9mm; height: 9mm; flex: none; }
+  .sh-clinic {
+    margin: 0;
+    font: 700 15pt / 1 var(--font-num);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .sh-place { margin: 0.8mm 0 0; font-size: 8.5pt; color: #222; }
+  .sh-date { margin: 0 0 0 auto; font-size: 9pt; text-align: right; }
+  .sh-title {
+    margin: 3mm 0 0;
+    font: 700 13pt / 1.1 var(--font-num);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .sh-fields {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr 1fr;
+    gap: 6mm;
+    margin: 2.5mm 0 0;
+  }
+  .sh-fields > div { display: flex; align-items: baseline; gap: 2mm; min-width: 0; }
+  .sh-fields dt { font: 600 8pt / 1 var(--font-num); letter-spacing: 0.1em; text-transform: uppercase; }
+  .sh-fields dd {
+    flex: 1;
+    min-height: 7mm;
+    margin: 0;
+    padding: 0 1mm;
+    border-bottom: 1pt solid #000;
+    font: 700 15pt / 1.2 var(--font-num);
+  }
+  .sh-meta { margin: 2mm 0 0; font-size: 8pt; color: #222; }
+
+  /* doses : deux colonnes, sections entières */
+  main {
+    columns: 2;
+    column-gap: 9mm;
+    column-rule: 0.5pt solid #888;
+    max-width: none;
+    padding: 0;
+  }
+  .card { margin: 0 0 4mm; scroll-margin-top: 0; }
+  .card h2 {
+    padding: 1.5mm 0 1mm;
+    border-top: 1.5pt solid #000;
+    font-size: 10pt;
+    letter-spacing: 0.1em;
+  }
+  .unit { color: #000; }
+  .group { margin-top: 3mm; font-size: 7.5pt; }
+  .row { padding: 1.2mm 0 0.8mm; column-gap: 2mm; }
+  .name { font-size: 10.5pt; }
+  .chip {
+    margin-left: 1.5mm;
+    padding: 0 1mm;
+    border: 0.6pt solid #000;
+    border-radius: 0.6mm;
+    font-size: 7pt;
+  }
+  .leader { border-bottom: 1pt dotted #555; }
+  .dose { font-size: 17pt; }
+  .dose-range { font-size: 14pt; }
+  .dose-unit { color: #000; font-size: 9pt; }
+  .dose-empty { opacity: 1; }
+  .sub { margin-top: 0.3mm; font-size: 8pt; color: #222; }
+  .route { border: 0.8pt solid #000; font-size: 8.5pt; }
+  .extra, .coef { font-size: 8.5pt; }
+  .rnote-warn { border: 0.5pt solid #000; background: none; color: #000; }
+
+  /* cases à cocher à la main : toujours vides sur le papier */
+  .tick { width: 5mm; height: 5mm; margin: 0.6mm 0 0; align-self: start; }
+  .box {
+    width: 4.5mm;
+    height: 4.5mm;
+    border: 0.9pt solid #000;
+    border-radius: 0.6mm;
+    background: #fff !important;
+  }
+  .tick input:checked + .box::after { display: none; }
+  .row.is-done .name,
+  .row.is-done .dose,
+  .row.is-done .sub { opacity: 1; text-decoration: none; }
+
+  /* lignes pour écrire à la main */
+  .sheet-notes { display: block; margin-top: 4mm; break-inside: avoid; }
+  .sheet-notes h3 {
+    margin: 0;
+    padding-bottom: 1mm;
+    border-top: 1.5pt solid #000;
+    padding-top: 1.5mm;
+    font: 600 10pt / 1.2 var(--font-num);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .sn-lines i {
+    display: block;
+    height: 6mm;
+    border-bottom: 0.5pt solid #888;
+  }
+
+  .card, .row, .sheet-head { break-inside: avoid; }
 }

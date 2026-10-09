@@ -1,7 +1,7 @@
 {
-  "name": "Injections et perf hospit",
+  "name": "Natura'Vet : injections et perf hospit",
   "short_name": "Injections",
-  "description": "Calcul des doses d'injection et de perfusion selon le poids de l'animal.",
+  "description": "Natura'Vet, vétérinaire à Mourmelon-le-Grand : calcul des doses d'injection et de perfusion selon le poids de l'animal.",
   "lang": "fr",
   "start_url": "./",
   "scope": "./",
