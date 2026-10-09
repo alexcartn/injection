@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Extrait de l'export Med'Vet (medicament.xlsx) l'index des formes orales pour chien et chat :
-comprimés et gélules, et liquides oraux (suspensions, solutions buvables). Les autres espèces et les
-autres formes (injectables, spot-on, colliers, aliments...) ne sont pas retenues.
+"""Extrait de l'export Med'Vet (medicament.xlsx) l'index des articles pour chien et chat :
+formes orales (comprimés, gélules, liquides buvables), injectables à concentration en mg/mL et spot-on.
+Les autres espèces et les autres formes (vaccins, colliers, aliments...) ne sont pas retenues.
 
 Usage : python3 -I tools/build-medvet-index.py chemin/vers/medicament.xlsx [sortie.json]
 
@@ -19,8 +19,15 @@ import openpyxl
 ORAL_FORM = re.compile(r'compri|gélule|capsule|croquer', re.I)
 # liquide oral : voie orale, forme buvable ou orale, jamais injectable
 LIQUID_FORM = re.compile(r'buvable|orale|sirop|^solution$|^suspension$', re.I)
-# flacon : [nombre de flacons] flacon [verre...] de 32 mL
-PACK_LIQUID = re.compile(r'(?:(\d+)\s+)?flacons?\b[^\d]{0,25}?(\d+(?:[.,]\d+)?)\s*m[lL]', re.I)
+# contenant : [nombre] flacon [verre...] de 32 mL ; ampoules, poches, seringues, cartouches pour les injectables
+PACK_LIQUID = re.compile(r'(?:(\d+)\s+)?(flacons?|ampoules?|poches?|seringues?|cartouches?)\b[^\d]{0,25}?(\d+(?:[.,]\d+)?)\s*m[lL]', re.I)
+SPOT_FORM = re.compile(r'spot', re.I)
+FLUIDS = re.compile(r'chlorure de sodium|glucose|lactate|ringer|chlorure de potassium|bicarbonate|dextrose', re.I)
+# une dénomination qui ne parle que d'autres espèces n'est pas pour le chien ni le chat, quoi qu'en dise la liste des espèces
+OTHER_SPECIES = re.compile(r'bovins?|porcins?|chevaux|cheval|[ée]quins?|veaux?|ovins?|caprins?|volailles?|poulets?|dindes?|moutons?|vaches?|porcs?|truies?', re.I)
+DOG_CAT = re.compile(r'chiens?|chats?|canin|f[ée]lin', re.I)
+NUM = r'(\d+(?:[.,]\d+)?)'
+
 LINK_PREFIX = 'https://med-vet.fr/produits/medicament/'
 UNITS = r'(?:compri\w*|g[ée]lules?|capsules?|cpr?s?\b|cps\b)'
 PACK_BLISTERS = re.compile(r'(\d+)\s+(?:plaquettes?|blisters?|films?|barquettes?|pots?|piluliers?|flacons?|tubes?|[ée]tuis?)\b[^\d]{0,40}?(\d+)\s+' + UNITS, re.I)
@@ -154,12 +161,55 @@ def liquid_concentration(raw_pa, name):
 
 
 def parse_liquid_pack(text):
-    """(nombre de flacons, volume d'un flacon en mL) ou (None, None)."""
+    """(nombre de contenants, volume d'un contenant en mL, nom du contenant) ou (None, None, None)."""
     m = PACK_LIQUID.search(text)
     if not m:
-        return None, None
-    volume = number(m.group(2))
-    return (int(m.group(1)) if m.group(1) else 1), (compact(volume) if volume and volume > 0 else None)
+        return None, None, None
+    volume = number(m.group(3))
+    return (int(m.group(1)) if m.group(1) else 1), (compact(volume) if volume and volume > 0 else None), fold(m.group(2)).rstrip('s')
+
+
+def parse_weight_band(name, presentations):
+    """Tranche de poids lue dans la dénomination (ou à défaut la présentation) : [min, max ou None, exclusif].
+
+    Seule une tranche écrite noir sur blanc est retenue (« chiens de 10 à 20 kg », « > 4-10 kg », « ≤ 2,5 kg »).
+    Une dénomination qui donne deux tranches (chiens ET chats) est jugée ambiguë : pas de tranche."""
+    for text in [name, *presentations]:
+        t = (text or '').replace('\xa0', ' ')
+        if DOG_CAT_BOTH(t) and len(re.findall(r'kg', t, re.I)) >= 2:
+            return None
+        m = re.search(r'([>≥])\s*' + NUM + r'\s*(?:kg\s*)?(?:-|–|à|a|et)\s*' + NUM + r'\s*kg', t, re.I)
+        if m:
+            return [number(m.group(2)), number(m.group(3)), 1 if m.group(1) == '>' else 0]
+        m = re.search(NUM + r'\s*(?:kg\s*)?(?:-|–|à|a)\s*' + NUM + r'\s*kg', t, re.I)
+        if m:
+            return [number(m.group(1)), number(m.group(2)), 0]
+        m = re.search(r"(?:[<≤]|jusqu['’]?\s*[àa]|moins de|inf[ée]rieur\w*\s+[àa])\s*" + NUM + r'\s*kg', t, re.I)
+        if m:
+            return [0, number(m.group(1)), 0]
+        m = re.search(r'([>≥]|plus de|sup[ée]rieur\w*\s+[àa]|au[- ]del[àa] de)\s*' + NUM + r'\s*kg', t, re.I)
+        if m:
+            return [number(m.group(2)), None, 1 if m.group(1).lower() in ('>', 'plus de') else 0]
+    return None
+
+
+def DOG_CAT_BOTH(text):
+    return bool(re.search(r'chiens?', text, re.I)) and bool(re.search(r'chats?', text, re.I))
+
+
+def parse_spot_pack(text, name):
+    """(pipettes par boîte, volume d'une pipette en mL ou 0) ou (None, None)."""
+    for source in (text, name):
+        m = re.search(r'(\d+)\s+(?:plaquettes?|sachets?|blisters?)\b[^\d]{0,40}?(\d+)\s*(?:pipettes?|applicateurs?)', source, re.I)
+        count = int(m.group(1)) * int(m.group(2)) if m else None
+        if count is None:
+            m = re.search(r'(\d+)\s*(?:pipettes?|pip\b|applicateurs?)', source, re.I)
+            count = int(m.group(1)) if m else None
+        if count:
+            v = re.search(r'(?:pipettes?|applicateurs?)[^\d]{0,40}?(\d+(?:[.,]\d+)?)\s*m[lL]', source, re.I)
+            volume = number(v.group(1)) if v else None
+            return count, compact(volume) if volume else 0
+    return None, None
 
 
 def valid_gtin(code):
@@ -206,18 +256,26 @@ def main():
         form = m['Forme pharmaceutique'] or ''
         codes = [c for c, label in (('CN', 'Chien'), ('CT', 'Chat')) if label in species[pid]]
         solid = bool(ORAL_FORM.search(form))
-        liquid = (not solid and 'Orale' in routes[pid] and 'injectable' not in form.lower()
+        injectable = not solid and 'injectable' in form.lower()
+        spot = not solid and not injectable and bool(SPOT_FORM.search(form))
+        liquid = (not solid and not injectable and not spot and 'Orale' in routes[pid]
                   and bool(LIQUID_FORM.search(form)))
-        if not (solid or liquid) or not codes:
+        if not (solid or liquid or injectable or spot) or not codes:
+            continue
+        if OTHER_SPECIES.search(m['Dénomination'] or '') and not DOG_CAT.search(m['Dénomination'] or ''):
+            stats['autres espèces dans la dénomination'] += 1
             continue
 
         conc = None
-        if liquid:
+        if liquid or injectable:
             if len(actives[pid]) != 1:
-                continue  # associations liquides : pas de règle de dosage, non proposées
+                continue  # associations liquides ou injectables : pas de règle de dosage, non proposées
             conc = liquid_concentration(actives[pid][0], clean(m['Dénomination']))
+            if injectable and conc is not None and (conc > 1000 or FLUIDS.search(actives[pid][0]['Nom du principes actifs'] or '')):
+                stats['perfusions et concentrations hors mg/kg'] += 1
+                continue  # solutés (sodium, glucose) : la fluidothérapie se calcule dans l'onglet Injections
             if conc is None:
-                stats['liquides sans concentration'] += 1
+                stats['injectables sans concentration' if injectable else 'liquides sans concentration'] += 1
                 continue
 
         pa = []
@@ -230,18 +288,31 @@ def main():
             pa.append([clean(a['Nom du principes actifs']), compact(round(qty, 4)) if qty is not None else None, unit])
 
         name = clean(m['Dénomination'])
-        if re.search(r'chiens?\s+et\s+chats?|chats?\s+et\s+chiens?', name, re.I):
+        dog_in_name = bool(re.search(r'\bchiens?\b|\bchiots?\b|\bcanin', name, re.I))
+        cat_in_name = bool(re.search(r'\bchats?\b|\bchatons?\b|\bf[ée]lin', name, re.I))
+        if dog_in_name and cat_in_name:
             codes = ['CN', 'CT']  # le libellé du produit fait foi quand la liste des espèces est incomplète
+        elif dog_in_name != cat_in_name:
+            codes = ['CN'] if dog_in_name else ['CT']  # ... ou quand elle se contredit (« chiens » écrit, « chat » listé)
 
         # conditionnement : [plaquettes par boîte, comprimés par plaquette, texte d'origine si illisible, GTIN]
         found, seen = [], {}
         texts = []
+        containers = collections.Counter()
         for text, raw_gtin in packs[pid]:
             text = clean(text)
             texts.append(text)
-            blisters, per = parse_liquid_pack(text) if liquid else parse_pack(text)
-            if liquid and not blisters:
-                continue  # sans volume de flacon, le reste ne se calcule pas
+            container = None
+            if liquid or injectable:
+                blisters, per, container = parse_liquid_pack(text)
+            elif spot:
+                blisters, per = parse_spot_pack(text, name)
+            else:
+                blisters, per = parse_pack(text)
+            if (liquid or injectable or spot) and not blisters:
+                continue  # sans volume de flacon ni nombre de pipettes, le reste ne se calcule pas
+            if container:
+                containers[container] += 1
             gtin = valid_gtin(raw_gtin)
             key = (blisters, per) if blisters else (None, None, text)
             if key in seen:
@@ -264,15 +335,25 @@ def main():
             'd': name,
             'f': form,
             'a': pa,
-            'm': None if liquid else strength_of(pa, name),
+            'm': None if (liquid or injectable or spot) else strength_of(pa, name),
             's': ','.join(codes),
-            'x': 0 if liquid else split_level(' '.join(texts) + ' ' + name + ' ' + form),
-            'u': 'mL' if liquid else ('gél.' if re.search(r'gélule|capsule', form, re.I) else 'cp'),
+            'x': 0 if (liquid or injectable or spot) else split_level(' '.join(texts) + ' ' + name + ' ' + form),
+            'u': 'pip' if spot else 'mL' if (liquid or injectable) else ('gél.' if re.search(r'gélule|capsule', form, re.I) else 'cp'),
             'k': found,
             'l': link,
         }
-        if liquid:
-            product['c'] = compact(conc)  # concentration en mg/mL ; k = [flacons par boîte, mL par flacon, '', GTIN]
+        if liquid or injectable:
+            product['c'] = compact(conc)  # concentration en mg/mL ; k = [contenants par boîte, mL par contenant, '', GTIN]
+            kind = containers.most_common(1)[0][0] if containers else 'flacon'
+            if kind != 'flacon':
+                product['ct'] = kind
+        if injectable:
+            product['r'] = 'inj'
+        if spot:
+            # k = [pipettes par boîte, mL par pipette (0 si inconnu), '', GTIN] ; w = tranche de poids du libellé
+            product['r'] = 'spot'
+            product['w'] = parse_weight_band(name, texts)
+            stats['spot-on avec tranche de poids lue' if product['w'] else 'spot-on sans tranche de poids lue'] += 1
         products.append(product)
 
     products.sort(key=lambda p: (fold(p['b']), p['m'] or p.get('c') or 0, fold(p['d'])))
@@ -282,10 +363,15 @@ def main():
     readable = sum(1 for p in products for k in p['k'] if k[0] is not None)
     total = sum(len(p['k']) for p in products)
     with_gtin = sum(1 for p in products for k in p['k'] if k[3])
-    liquids = sum(1 for p in products if p['u'] == 'mL')
-    print(f'{len(products)} produits dont {liquids} liquides, {total} présentations dont {readable} lisibles et '
-          f'{with_gtin} avec GTIN valide ({stats["gtin_multiples"]} conditionnements avec plusieurs codes), '
-          f'{stats["liquides sans concentration"]} liquides écartés faute de concentration, écrit dans {out}')
+    kinds = collections.Counter(p.get('r', 'oral') for p in products)
+    print(f'{len(products)} produits (voie orale {kinds["oral"]}, injectables {kinds["inj"]}, spot-on {kinds["spot"]}), '
+          f'{total} présentations dont {readable} lisibles et {with_gtin} avec GTIN valide '
+          f'({stats["gtin_multiples"]} conditionnements avec plusieurs codes)')
+    for key in ('liquides sans concentration', 'injectables sans concentration', 'perfusions et concentrations hors mg/kg',
+                'autres espèces dans la dénomination',
+                'spot-on avec tranche de poids lue', 'spot-on sans tranche de poids lue'):
+        print(f'  {key} : {stats[key]}')
+    print(f'écrit dans {out}')
 
 
 if __name__ == '__main__':

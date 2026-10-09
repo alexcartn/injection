@@ -4,7 +4,7 @@ import { ANIMALS } from './animals.js';
 import {
   plan, tabletText, tabletSpeech, searchIndex, packText, productName, formatFromProduct, drugFromProduct,
   normalizeDrug, normalizeFormat, normalizePrefs, fold, TOLERANCES, MAX_PER_INTAKE,
-  substanceOf, listSubstances, brandsOf, marketFormats, formatPackText, gtinCodes, isLiquid, SYRINGES,
+  substanceOf, listSubstances, brandsOf, marketFormats, formatPackText, gtinCodes, isLiquid, isBand, routeOf, planBand, SYRINGES,
 } from './rx.js';
 
 const STORE_KEY = 'injection:sections:v1';
@@ -792,7 +792,20 @@ const cpWord = (format) => (format.unit === 'gél.' ? 'gélule' : 'comprimé');
 const fmtMl = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
 // quantité de « ce qu'on donne » : 1½ cp, ou 0,8 mL
 const amountText = (o) => (isLiquid(o.format) ? fmtMl.format(o.amount) : tabletText(o.tablets));
-const unitText = (format) => (isLiquid(format) ? 'mL' : format.unit);
+const unitText = (format) => (isLiquid(format) ? 'mL' : isBand(format) ? 'pipette' : format.unit);
+const ROUTE_LABEL = { oral: 'Orale', inj: 'Injectable', spot: 'Spot-on' };
+const ROUTE_CHOICES = [['oral', 'Orale : comprimés, liquides buvables'], ['inj', 'Injectable'], ['spot', 'Spot-on : choisi selon le poids']];
+// mot du contenant d'une boîte : plaquette, flacon (ou ampoule, poche...), pipette
+const boxWord = (f) => (isBand(f) ? 'pipette' : isLiquid(f) ? f.container ?? 'flacon' : 'plaquette');
+const intakeName = (drug) => (drug.route === 'inj' ? 'injection' : 'prise');
+
+// Tranche de poids d'un spot-on, comme dans son libellé.
+function bandText(b) {
+  const n = (v) => fmtMg.format(v);
+  if (b.hi == null) return `${b.excl ? 'plus de' : 'à partir de'} ${n(b.lo)} kg`;
+  if (!b.lo) return `jusqu’à ${n(b.hi)} kg`;
+  return `${b.excl ? '> ' : ''}${n(b.lo)} – ${n(b.hi)} kg`;
+}
 
 let rxBuilt = false;
 let rxListEl;
@@ -830,13 +843,14 @@ function ensureRxIndex() {
 }
 
 function posoText(drug) {
+  if (drug.route === 'spot') return `Choisi selon le poids${drug.interval ? ` · une application tous les ${drug.interval} jours` : ''}`;
   if (!isNum(drug.min) || !drug.perDay) return 'Posologie à renseigner';
   const range = isNum(drug.max) && drug.max > drug.min
     ? `${fmtMg.format(drug.min)} – ${fmtMg.format(drug.max)}`
     : fmtMg.format(drug.min);
-  const prises = countText(drug.perDay, 'prise');
+  const prises = countText(drug.perDay, intakeName(drug));
   const kg = drug.substance?.includes('+') ? 'mg/kg d’association' : 'mg/kg';
-  return drug.basis === 'day' ? `${range} ${kg} par jour, en ${prises}` : `${range} ${kg} par prise, ${prises} par jour`;
+  return drug.basis === 'day' ? `${range} ${kg} par jour, en ${prises}` : `${range} ${kg} par ${intakeName(drug)}, ${prises} par jour`;
 }
 
 // --- résultat d'un médicament --------------------------------------------------------------
@@ -845,21 +859,22 @@ function posoText(drug) {
 // éventuelle), ou, sans substance ou en mode « Mon stock », les dosages saisis à la main.
 function candidatesFor(drug) {
   const { source, dispense } = state.rx.prefs;
-  if (source !== 'medvet' || !drug.substance) return { formats: drug.formats, market: false };
+  // un spot-on se choisit toujours dans Med'Vet : il n'a pas de dosage à saisir
+  if ((source !== 'medvet' && drug.route !== 'spot') || !drug.substance) return { formats: drug.formats, market: false };
   if (rxIndexFailed) return { formats: drug.formats, market: false, failed: true };
   if (!rxData) return { loading: true };
   const species = state.species !== 'all' ? state.species : drug.species;
-  return { formats: marketFormats(rxData.p, drug.substance, { species, brand: drug.brand, dispense }), market: true, species };
+  return { formats: marketFormats(rxData.p, drug.substance, { route: drug.route, species, brand: drug.brand, dispense }), market: true, species };
 }
 
 // GTIN de l'article, à copier d'un toucher. Plusieurs tailles de boîte regroupées : un code par boîte.
 function gtinNode(f) {
   const multi = f.boxes?.length > 1;
-  const boxes = multi ? f.boxes : [{ blisters: f.blisters, gtin: f.gtin }];
+  const boxes = multi ? f.boxes : [{ blisters: isBand(f) ? f.perBox : f.blisters, gtin: f.gtin }];
   const items = boxes.flatMap((b) => gtinCodes(b.gtin).map((code) => ({ b, code })));
   if (!items.length) return null;
   return el('p', { class: 'rx-gtin' }, items.map(({ b, code }) => el('span', {},
-    multi ? `${countText(b.blisters, isLiquid(f) ? 'flacon' : 'plaquette')} : ` : '',
+    multi ? `${countText(b.blisters, boxWord(f))} : ` : '',
     el('span', { class: 'rx-gtin-code' }, `GTIN ${code}`),
   )));
 }
@@ -867,7 +882,14 @@ function gtinNode(f) {
 // Sous le nom de l'article : forme, conditionnement, espèces, et lien vers sa fiche Med'Vet.
 function articleLine(f) {
   const species = f.species?.split(',').map((c) => SPECIES_LABEL[c]).join(' et ');
-  const bits = [f.form?.toLowerCase(), isLiquid(f) && `${fmtMg.format(f.conc)} mg/mL`, formatPackText(f), species, f.assoc && `association : ${fmtMg.format(f.mg)} mg par ${cpWord(f)}`].filter(Boolean);
+  const bits = [
+    f.form?.toLowerCase(),
+    isBand(f) && f.band && `pour ${bandText(f.band)}`,
+    isLiquid(f) && `${fmtMg.format(f.conc)} mg/mL`,
+    formatPackText(f),
+    species,
+    f.assoc && `association : ${fmtMg.format(f.mg)} mg par ${cpWord(f)}`,
+  ].filter(Boolean);
   return el('p', { class: 'rx-article' },
     el('span', {}, bits.join(' · ')),
     f.link && el('a', { class: 'rx-link', href: f.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
@@ -880,7 +902,8 @@ function rxNote(text, onClick, label) {
 
 function supplyLines(o, days) {
   const s = o.supply;
-  const label = days ? `À remettre · ${countText(days, 'jour')}` : 'À remettre';
+  const verb = o.format.route === 'inj' ? 'À ouvrir' : 'À remettre';
+  const label = days ? `${verb} · ${countText(days, 'jour')}` : verb;
   let big = '–';
   let unit = '';
   const bits = [];
@@ -890,11 +913,12 @@ function supplyLines(o, days) {
     bits.push(isLiquid(o.format) ? `${fmtMl.format(s.total)} mL à donner` : `${tabletText(s.totalQuarters / 4)} ${o.format.unit} à donner`, 'conditionnement non renseigné');
   } else if (s.kind === 'liquid') {
     big = String(s.count);
+    const word = s.container ?? 'flacon';
     if (s.unit === 'box') {
       unit = s.count > 1 ? 'boîtes' : 'boîte';
-      bits.push(s.bottles > 1 ? `${s.bottles} flacons de ${fmtMl.format(s.bottle)} mL` : `un flacon de ${fmtMl.format(s.bottle)} mL`);
+      bits.push(s.bottles > 1 ? `${s.bottles} ${word}s de ${fmtMl.format(s.bottle)} mL` : `un ${word} de ${fmtMl.format(s.bottle)} mL`);
     } else {
-      unit = s.count > 1 ? 'flacons' : 'flacon';
+      unit = s.count > 1 ? `${word}s` : word;
       bits.push(`de ${fmtMl.format(s.bottle)} mL`);
     }
     bits.push(`${fmtMl.format(s.total)} mL à donner`);
@@ -932,7 +956,7 @@ function intakeLine(o, target) {
   const dev = o.dev;
   const range = target.ranged ? `${fmtMg.format(target.lo)} – ${fmtMg.format(target.hi)}` : fmtMg.format(target.lo);
   return el('div', { class: 'rx-line' },
-    el('span', { class: 'name' }, 'Par prise'),
+    el('span', { class: 'name' }, o.format.route === 'inj' ? 'Par injection' : 'Par prise'),
     el('span', { class: 'leader', 'aria-hidden': 'true' }),
     el('div', { class: 'dose' },
       el('span', { 'aria-hidden': 'true' }, amountText(o)),
@@ -954,10 +978,10 @@ function intakeLine(o, target) {
 function altRow(drug, o, days, market) {
   const s = o.supply;
   const liquid = isLiquid(o.format);
-  const parts = [`${amountText(o)} ${unitText(o.format)} par prise`];
+  const parts = [`${amountText(o)} ${unitText(o.format)} par ${o.format.route === 'inj' ? 'injection' : 'prise'}`];
   if (s?.packs) {
     const what = s.unit === 'box' ? countText(s.count, 'boîte') : s.unit === 'blister' ? countText(s.count, 'plaquette')
-      : s.unit === 'bottle' ? countText(s.count, 'flacon') : `${s.count} ${o.format.unit}`;
+      : s.unit === 'bottle' ? countText(s.count, s.container ?? 'flacon') : `${s.count} ${o.format.unit}`;
     const rest = liquid ? `${fmtMl.format(s.leftover)} mL` : `${tabletText(s.leftover)} ${o.format.unit}`;
     parts.push(what, s.leftover > 0 ? `reste ${rest} (${fmtMg.format(s.leftoverMg)} mg)` : 'aucun reste');
     if (s.cost !== null) parts.push(`≈ ${eur.format(s.cost)}`);
@@ -988,6 +1012,82 @@ function equivalentsNode(o) {
   );
 }
 
+// Spot-on : l'article dont la tranche de poids (lue dans le libellé du produit) contient le poids du patient.
+function rxResultBand(drug, c, openEditor) {
+  const days = state.rx.days;
+  if (!drug.substance) return [rxNote('Choisissez la substance du spot-on pour trouver l’article selon le poids.', openEditor, 'Choisir')];
+  if (c.failed) return [rxNote('La base Med’Vet n’est pas disponible : un spot-on ne peut pas être choisi sans elle.', openEditor, 'Modifier')];
+  const r = planBand({ ...drug, formats: c.formats }, { weight: state.weight, days });
+  const who = SPECIES_LABEL[c.species]?.toLowerCase();
+  const unread = r.unread ? el('p', { class: 'rx-hint' }, `${countText(r.unread, 'article')} sans tranche de poids lisible dans le libellé du produit : non proposé${r.unread > 1 ? 's' : ''}, à choisir sur la fiche Med’Vet.`) : null;
+  if (r.status === 'formats') {
+    return [rxNote(`Aucun spot-on Med’Vet ${drug.substance.toLowerCase()}${who ? ` pour ${who}` : ''}${drug.brand ? ` en marque ${drug.brand}` : ''}.`, openEditor, 'Modifier')];
+  }
+  if (r.status === 'weight') return [el('p', { class: 'rx-hint' }, 'Saisissez le poids de l’animal.'), unread].filter(Boolean);
+  if (!r.options.length) return [el('p', { class: 'rx-warn', role: 'alert' }, 'Aucun de ces articles n’indique de tranche de poids dans son libellé : choisissez-le sur la fiche Med’Vet.'), unread].filter(Boolean);
+
+  const [best, ...others] = r.options;
+  const out = [];
+  if (!best.ok) {
+    out.push(el('p', { class: 'rx-warn', role: 'alert' },
+      `Aucune tranche de poids ne couvre ${fmtWeight.format(state.weight)} kg. La plus proche est à ${fmtMg.format(best.gap)} kg : à ne pas remettre sans vérification.`));
+  }
+  const f = best.format;
+  out.push(
+    el('p', { class: 'rx-pick' },
+      el('span', { class: 'rx-label' }, best.ok ? 'Article à donner' : 'Plus proche'),
+      el('span', { class: 'rx-vname' }, f.name),
+    ),
+    articleLine(f),
+    gtinNode(f),
+    equivalentsNode(best),
+    el('div', { class: 'rx-line' },
+      el('span', { class: 'name' }, 'Par application'),
+      el('span', { class: 'leader', 'aria-hidden': 'true' }),
+      el('div', { class: 'dose' }, '1', el('span', { class: 'dose-unit' }, 'pipette')),
+      el('div', { class: 'sub' }, el('span', { class: 'calc rx-bits' },
+        el('span', { class: 'extra' }, `pour ${bandText(f.band)}`),
+        f.volume && el('span', { class: 'extra' }, `${fmtMl.format(f.volume)} mL`),
+      )),
+    ),
+  );
+  const s = best.supply;
+  if (s?.packs) {
+    out.push(el('div', { class: 'rx-line' },
+      el('span', { class: 'name' }, `À remettre · ${countText(r.applications, 'application')}`),
+      el('span', { class: 'leader', 'aria-hidden': 'true' }),
+      el('div', { class: 'dose' }, String(s.count), el('span', { class: 'dose-unit' }, s.count > 1 ? 'boîtes' : 'boîte')),
+      el('div', { class: 'sub' }, el('span', { class: 'calc rx-bits' },
+        el('span', { class: 'extra' }, `de ${countText(s.perBox, 'pipette')}`),
+        el('span', { class: 'extra' }, s.leftover > 0 ? `reste ${countText(s.leftover, 'pipette')}` : 'aucun reste'),
+      )),
+    ));
+  } else if (!drug.interval) {
+    out.push(el('p', { class: 'rx-hint' }, 'Indiquez l’intervalle entre deux applications (Modifier) et la durée pour compter les pipettes.'));
+  } else if (!days) {
+    out.push(el('p', { class: 'rx-hint' }, 'Choisissez la durée pour compter les pipettes.'));
+  }
+  out.push(unread);
+
+  const shown = best.ok ? others.filter((o) => o.ok).slice(0, 8) : others.slice(0, 3);
+  const okOthers = others.filter((o) => o.ok).length;
+  if (shown.length) {
+    out.push(el('details', { class: 'rx-alt' },
+      el('summary', {}, `Autres articles (${shown.length}${okOthers > shown.length ? ` sur ${okOthers}` : ''})`),
+      el('ul', {}, shown.map((o) => el('li', { class: 'rx-alt-row' },
+        el('span', { class: 'name' }, o.format.name),
+        el('span', { class: 'rx-alt-text' }, [o.format.form?.toLowerCase(), o.format.band && `pour ${bandText(o.format.band)}`, formatPackText(o.format)].filter(Boolean).join(' · ')),
+        o.supply?.packs && el('span', { class: 'rx-alt-text' }, `${countText(o.supply.count, 'boîte')} de ${countText(o.supply.perBox, 'pipette')}, ${o.supply.leftover > 0 ? `reste ${countText(o.supply.leftover, 'pipette')}` : 'aucun reste'}`),
+        gtinNode(o.format),
+        o.same?.length && el('span', { class: 'rx-alt-text' }, `Équivalents : ${o.same.map((x) => x.format.brand).join(', ')}`),
+        !o.ok && el('span', { class: 'rnote rnote-warn' }, `à ${fmtMg.format(o.gap)} kg de la tranche`),
+        o.format.link && el('a', { class: 'rx-link', href: o.format.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
+      ))),
+    ));
+  }
+  return out.filter(Boolean);
+}
+
 function rxResult(drug, openEditor) {
   const days = state.rx.days;
   const prefs = state.rx.prefs;
@@ -996,13 +1096,14 @@ function rxResult(drug, openEditor) {
     ensureRxIndex();
     return [el('p', { class: 'rx-hint' }, 'Chargement de la base Med’Vet…')];
   }
+  if (drug.route === 'spot') return rxResultBand(drug, c, openEditor);
   const r = plan({ ...drug, formats: c.formats }, { weight: state.weight, days, prefs });
-  if (r.status === 'drug') return [rxNote('Renseignez la dose (mg/kg) et le nombre de prises par jour.', openEditor, 'Renseigner')];
+  if (r.status === 'drug') return [rxNote(`Renseignez la dose (mg/kg) et le nombre de ${intakeName(drug)}s par jour.`, openEditor, 'Renseigner')];
   if (r.status === 'formats') {
     let text;
     if (c.market) {
       const who = SPECIES_LABEL[c.species]?.toLowerCase();
-      text = `Aucun article Med’Vet de ${drug.substance.toLowerCase()}${who ? ` pour ${who}` : ''}${drug.brand ? ` en marque ${drug.brand}` : ''}.`;
+      text = `Aucun ${drug.route === 'inj' ? 'injectable' : 'article'} Med’Vet de ${drug.substance.toLowerCase()}${who ? ` pour ${who}` : ''}${drug.brand ? ` en marque ${drug.brand}` : ''}.`;
     } else if (c.failed) {
       text = 'La base Med’Vet n’est pas disponible : seuls les dosages saisis à la main peuvent servir.';
     } else {
@@ -1052,12 +1153,13 @@ function rxCard(drug) {
 
   const title = el('h2', { class: 'rx-name' });
   const chip = el('span', { class: 'chip' });
+  const routeChip = el('span', { class: 'chip chip-route' });
   const toggle = el('button', { type: 'button', class: 'btn btn-ghost btn-small', 'aria-expanded': 'false' }, 'Modifier');
   const poso = el('p', { class: 'rx-poso' });
   const result = el('div', { class: 'rx-result' });
   const editor = el('div', { class: 'rx-editor', hidden: true });
   const root = el('section', { class: 'rx-card' },
-    el('div', { class: 'rx-head' }, el('div', { class: 'rx-title' }, title, chip), toggle),
+    el('div', { class: 'rx-head' }, el('div', { class: 'rx-title' }, title, chip, routeChip), toggle),
     poso, result, editor,
   );
 
@@ -1067,7 +1169,9 @@ function rxCard(drug) {
     chip.textContent = SPECIES_LABEL[drug.species] ?? '';
     chip.className = `chip chip-${drug.species}`;
     chip.hidden = !drug.species;
-    const market = state.rx.prefs.source === 'medvet' && drug.substance;
+    routeChip.textContent = ROUTE_LABEL[drug.route];
+    routeChip.hidden = drug.route === 'oral';
+    const market = (state.rx.prefs.source === 'medvet' || drug.route === 'spot') && drug.substance;
     poso.replaceChildren(...[
       posoText(drug),
       market && el('span', {}, `Med’Vet : ${drug.substance.toLowerCase()}, ${drug.brand ? `marque ${drug.brand}` : 'toutes marques'}`),
@@ -1146,7 +1250,7 @@ function buildRxEditor(drug, host, refresh, close) {
   const substanceSel = el('select', {});
   const brandSel = el('select', {});
   const fillSubstances = () => {
-    const labels = rxData ? listSubstances(rxData.p).map((x) => x.label) : [];
+    const labels = rxData ? listSubstances(rxData.p, drug.route).map((x) => x.label) : [];
     if (drug.substance && !labels.includes(drug.substance)) labels.push(drug.substance);
     substanceSel.replaceChildren(
       el('option', { value: '' }, 'Aucune : mes dosages seulement'),
@@ -1154,7 +1258,7 @@ function buildRxEditor(drug, host, refresh, close) {
     );
   };
   const fillBrands = () => {
-    const brands = rxData && drug.substance ? brandsOf(rxData.p, drug.substance) : [];
+    const brands = rxData && drug.substance ? brandsOf(rxData.p, drug.substance, drug.route) : [];
     if (drug.brand && !brands.includes(drug.brand)) brands.push(drug.brand);
     brandSel.replaceChildren(
       el('option', { value: '' }, 'Toutes les marques'),
@@ -1175,31 +1279,29 @@ function buildRxEditor(drug, host, refresh, close) {
   ensureRxIndex();
   loadRxIndex().then(() => { fillSubstances(); fillBrands(); }).catch(() => {});
 
-  host.replaceChildren(
-    el('div', { class: 'rx-form' },
-      field('Nom', textInput(drug.name, (v) => { drug.name = v; }, commit), 'wide'),
-      field('Substance (Med’Vet)', substanceSel, 'wide'),
-      field('Marque', brandSel, 'wide'),
-      field('Espèce', select([['', 'Chien et chat'], ['CN', 'Chien'], ['CT', 'Chat']], drug.species || '', (v) => { drug.species = v || undefined; }, commit)),
-      field('Prises par jour', select(
-        [['', '–'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']],
-        drug.perDay ? String(drug.perDay) : '',
-        (v) => { drug.perDay = v ? Number(v) : null; },
-        commit,
-      )),
-      field('Dose (mg/kg)', numInput(drug.min, (v) => { drug.min = v; }, true, commit)),
-      field('Dose max (mg/kg)', numInput(drug.max, (v) => { drug.max = v ?? undefined; }, false, commit)),
-      field('Dose donnée', select([['intake', 'par prise'], ['day', 'par jour']], drug.basis, (v) => { drug.basis = v; }, commit), 'wide'),
-      field('Note', textInput(drug.note, (v) => { drug.note = v; }, commit), 'wide'),
-    ),
-    el('p', { class: 'rx-help' }, 'La dose se lit sur la fiche du médicament. « Par jour » est divisée par le nombre de prises.'),
-    el('details', { class: 'rx-stock', open: !drug.substance },
+  const posologyFields = el('div', { class: 'rx-form' },
+    field('Prises par jour', select(
+      [['', '–'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']],
+      drug.perDay ? String(drug.perDay) : '',
+      (v) => { drug.perDay = v ? Number(v) : null; },
+      commit,
+    )),
+    field('Dose (mg/kg)', numInput(drug.min, (v) => { drug.min = v; }, true, commit)),
+    field('Dose max (mg/kg)', numInput(drug.max, (v) => { drug.max = v ?? undefined; }, false, commit)),
+    field('Dose donnée', select([['intake', 'par prise ou injection'], ['day', 'par jour']], drug.basis, (v) => { drug.basis = v; }, commit), 'wide'),
+  );
+  const help = el('p', { class: 'rx-help' }, 'La dose se lit sur la fiche du médicament. « Par jour » est divisée par le nombre de prises.');
+  const intervalFields = el('div', { class: 'rx-form' },
+    field('Une application tous les (jours)', numInput(drug.interval, (v) => { drug.interval = Number.isInteger(v) && v > 0 ? v : undefined; }, false, commit), 'wide'),
+    el('p', { class: 'rx-help wide' }, 'Le spot-on est choisi selon le poids, d’après la tranche écrite dans le libellé du produit : aucune dose à saisir. L’intervalle (30 jours, 84 jours...) sert à compter les pipettes pour la durée choisie.'),
+  );
+  const stock = el('details', { class: 'rx-stock', open: !drug.substance },
       el('summary', {}, 'Mes dosages (si pas de substance, ou en mode « Mon stock »)'),
       formatsHost,
     el('div', { class: 'rx-actions' },
       button('Ajouter depuis Med’Vet', () => {
         searchHost.hidden = !searchHost.hidden;
-        if (!search) { search = rxSearch(addFound); searchHost.replaceChildren(search.root); }
+        if (!search) { search = rxSearch(addFound, { route: drug.route }); searchHost.replaceChildren(search.root); }
         if (!searchHost.hidden) search.focus();
       }),
       button('Ajouter à la main', () => {
@@ -1210,7 +1312,42 @@ function buildRxEditor(drug, host, refresh, close) {
       }),
     ),
     searchHost,
+  );
+
+  // la voie change les champs : posologie en mg/kg (oral, injectable) ou intervalle (spot-on, selon le poids)
+  const applyRoute = () => {
+    const spot = drug.route === 'spot';
+    posologyFields.hidden = spot;
+    help.hidden = spot;
+    stock.hidden = spot;
+    intervalFields.hidden = !spot;
+  };
+  const routeSel = select(ROUTE_CHOICES, drug.route, (v) => {
+    drug.route = v;
+    drug.substance = undefined;
+    drug.brand = undefined;
+    search = undefined;
+    searchHost.replaceChildren();
+    searchHost.hidden = true;
+    fillSubstances();
+    fillBrands();
+    applyRoute();
+  }, commit);
+  applyRoute();
+
+  host.replaceChildren(
+    el('div', { class: 'rx-form' },
+      field('Nom', textInput(drug.name, (v) => { drug.name = v; }, commit), 'wide'),
+      field('Voie', routeSel, 'wide'),
+      field('Substance (Med’Vet)', substanceSel, 'wide'),
+      field('Marque', brandSel, 'wide'),
+      field('Espèce', select([['', 'Chien et chat'], ['CN', 'Chien'], ['CT', 'Chat']], drug.species || '', (v) => { drug.species = v || undefined; }, commit)),
+      field('Note', textInput(drug.note, (v) => { drug.note = v; }, commit)),
     ),
+    posologyFields,
+    help,
+    intervalFields,
+    stock,
     el('div', { class: 'rx-actions rx-end' },
       button('Supprimer ce médicament', () => {
         if (!confirm(`Supprimer « ${drug.name || 'Sans nom'} » du catalogue ?`)) return;
@@ -1226,18 +1363,19 @@ function buildRxEditor(drug, host, refresh, close) {
 
 // --- recherche dans l'index Med'Vet ------------------------------------------------------------
 
-function rxSearch(onPick) {
+function rxSearch(onPick, { route } = {}) {
   const input = el('input', {
     type: 'search',
     class: 'text',
     autocomplete: 'off',
-    placeholder: 'Nom ou principe actif (ex. Zitac, méloxicam)',
+    placeholder: 'Nom, principe actif ou GTIN (ex. Zitac, méloxicam)',
     'aria-label': 'Rechercher un médicament dans Med’Vet',
   });
   const status = el('p', { class: 'prefs-note', role: 'status' }, 'Chargement de la base Med’Vet…');
   const hits = el('div', { class: 'rx-hits' });
   const root = el('div', { class: 'rx-search' }, input, status, hits);
   let data = null;
+  let pool = [];
   let message = '';
 
   const run = () => {
@@ -1245,10 +1383,10 @@ function rxSearch(onPick) {
     const query = input.value.trim();
     if (query.length < 2) {
       hits.replaceChildren();
-      status.textContent = message || `Base Med’Vet du ${data.date} : formes orales pour chien et chat (comprimés, gélules, liquides). Posologies non incluses.`;
+      status.textContent = message || `Base Med’Vet du ${data.date} : articles pour chien et chat (voie orale, injectables, spot-on). Posologies non incluses.`;
       return;
     }
-    const found = searchIndex(data.p, query, 15);
+    const found = searchIndex(pool, query, 15);
     const count = `${countText(found.length, 'produit')}${found.length === 15 ? ' (affinez la recherche)' : ''}`;
     status.textContent = message || (found.approx ? `Aucun résultat exact : ${count} proche${found.length > 1 ? 's' : ''} de « ${query} »` : found.length ? count : 'Aucun résultat : ajoutez-le à la main.');
     message = '';
@@ -1256,16 +1394,28 @@ function rxSearch(onPick) {
   };
 
   const hit = (product) => {
-    const actives = product.u === 'mL'
-      ? `${product.a[0][0].replace(/\s*\(.*\)/, '').toLowerCase()} ${String(product.c).replace('.', ',')} mg/mL`
-      : product.a.map((a) => `${a[0].replace(/\s*\(.*\)/, '').toLowerCase()}${a[1] != null ? ` ${String(a[1]).replace('.', ',')} ${a[2]}` : ''}`).join(' + ');
+    const kind = routeOf(product);
+    const bare = (name) => name.replace(/^(\S.*?)\s*\([^()]*\)\s*$/, '$1').toLowerCase();
+    let actives;
+    if (kind === 'spot') actives = [...new Set(product.a.map((a) => bare(a[0])))].join(' + ');
+    else if (product.u === 'mL') actives = `${bare(product.a[0][0])} ${String(product.c).replace('.', ',')} mg/mL`;
+    else actives = product.a.map((a) => `${bare(a[0])}${a[1] != null ? ` ${String(a[1]).replace('.', ',')} ${a[2]}` : ''}`).join(' + ');
     const species = product.s.split(',').map((c) => SPECIES_LABEL[c]).join(', ');
+    const meta = [actives, species, kind === 'inj' && 'injectable', kind === 'spot' && 'spot-on'].filter(Boolean).join(' · ');
+    let hint = null;
+    if (kind === 'spot') {
+      hint = product.w
+        ? `Tranche de poids : ${bandText({ lo: product.w[0], hi: product.w[1], excl: Boolean(product.w[2]) })}`
+        : 'Tranche de poids non lue dans le libellé : voir la fiche Med’Vet.';
+    } else if ((product.m ?? product.c) == null) {
+      hint = 'Dosage par comprimé à saisir après l’ajout.';
+    }
     return el('div', { class: 'rx-hit' },
-      el('p', { class: 'rx-hit-name' }, productName(product), el('span', { class: 'rx-hit-meta' }, `${actives} · ${species}`)),
-      (product.m ?? product.c) == null && el('p', { class: 'rx-hint' }, 'Dosage par comprimé à saisir après l’ajout.'),
+      el('p', { class: 'rx-hit-name' }, productName(product), el('span', { class: 'rx-hit-meta' }, meta)),
+      hint && el('p', { class: 'rx-hint' }, hint),
       el('ul', { class: 'rx-packs' }, product.k.map((pack) => el('li', {},
         el('div', {},
-          el('span', {}, packText(pack, product.u)),
+          el('span', {}, packText(pack, product.u, product.ct)),
           pack[3] && el('span', { class: 'rx-gtin rx-gtin-code' }, gtinCodes(pack[3]).map((c) => `GTIN ${c}`).join(' · ')),
         ),
         button('Ajouter', () => { message = onPick(product, pack); run(); }, 'btn-small'),
@@ -1274,7 +1424,11 @@ function rxSearch(onPick) {
   };
 
   input.addEventListener('input', run);
-  loadRxIndex().then((loaded) => { data = loaded; run(); }).catch(() => {
+  loadRxIndex().then((loaded) => {
+    data = loaded;
+    pool = route ? data.p.filter((p) => routeOf(p) === route) : data.p;
+    run();
+  }).catch(() => {
     input.hidden = true;
     status.textContent = 'La recherche Med’Vet n’est pas disponible : ajoutez le médicament à la main.';
   });
@@ -1292,7 +1446,8 @@ function sameFormat(f, product, pack) {
 function addDrugFromProduct(product, pack) {
   const substance = substanceOf(product);
   const brand = fold(product.b);
-  const existing = state.rx.drugs.find((d) => (substance ? d.substance === substance.label : fold(d.name) === brand));
+  const route = routeOf(product);
+  const existing = state.rx.drugs.find((d) => d.route === route && (substance ? d.substance === substance.label : fold(d.name) === brand));
   if (existing) {
     const f = formatFromProduct(product, pack);
     const exists = existing.formats.some((g) => sameFormat(g, product, pack));
@@ -1305,7 +1460,9 @@ function addDrugFromProduct(product, pack) {
   state.rx.drugs.push(drug);
   saveRx();
   showRxCard(drug);
-  return `« ${drug.name} » ajouté : renseignez maintenant sa posologie.`;
+  return route === 'spot'
+    ? `« ${drug.name} » ajouté : l’article se choisit selon le poids.`
+    : `« ${drug.name} » ajouté : renseignez maintenant sa posologie.`;
 }
 
 // Affiche la carte, ouvre son éditeur et la ramène à l'écran.

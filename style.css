@@ -1436,6 +1436,17 @@ body[data-view="rx"] > .prefs { display: none; }
 }
 .rx-same li .rx-gtin { margin: 0; }
 
+/* voie d'un médicament (injectable, spot-on) */
+.chip-route {
+  background: var(--paper-2);
+  color: var(--ink-2);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+.rx-form[hidden],
+.rx-help[hidden],
+.rx-stock[hidden] { display: none; }
+.rx-help.wide { grid-column: 1 / -1; }
+
 /* « Mes dosages » : replié quand la substance suffit */
 .rx-stock { display: grid; gap: var(--s-3); }
 .rx-stock > summary {

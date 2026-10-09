@@ -1,16 +1,21 @@
-// Ordonnance : quelle version d'un médicament remettre (dosage du comprimé, plaquettes) selon le poids
-// de l'animal et la durée du traitement. Calcul pur, sans DOM : testable seul.
+// Ordonnance : quel article remettre (dosage du comprimé, flacon, pipette...) selon le poids de l'animal et la
+// durée du traitement. Calcul pur, sans DOM : testable seul.
 //
 // Un médicament du catalogue :
 //   name, species ('CN' | 'CT' | absent), min (+ max) en mg/kg, basis ('intake' par prise | 'day' par jour),
 //   perDay (prises par jour), note, link, formats[] (dosages saisis à la main : « mon stock »),
 //   substance (libellé Med'Vet : l'appli cherche alors parmi tous les articles de la substance),
-//   brand (marque : restreint la recherche à cette marque, absente = toutes)
+//   brand (marque : restreint la recherche à cette marque, absente = toutes),
+//   route ('oral' comprimés et liquides buvables | 'inj' injectables | 'spot' spot-on : article choisi selon le poids),
+//   interval (spot-on : jours entre deux applications, pour compter les pipettes)
 // Un dosage ou article (format) :
 //   name, mg (par comprimé), perBlister (comprimés par plaquette), blisters (plaquettes par boîte),
 //   split ('none' | 'half' | 'quarter' : plus petit morceau possible), price (la boîte, facultatif), unit ('cp' | 'gél.'),
 //   gtin (code de la boîte, facultatif ; plusieurs codes séparés par des virgules)
-// Un liquide oral a unit 'mL' : conc (mg/mL), volume (mL d'un flacon), bottles (flacons par boîte).
+// Un liquide (oral ou injectable) a unit 'mL' : conc (mg/mL), volume (mL d'un contenant), bottles (contenants par
+// boîte), container ('flacon' par défaut, 'ampoule', 'poche'...), route 'inj' pour un injectable.
+// Un spot-on a unit 'pip' : band { lo, hi (null = sans limite), excl (lo exclu) } la tranche de poids du libellé
+// (null = non lue), perBox (pipettes par boîte), volume (mL d'une pipette).
 
 export const MAX_PER_INTAKE = 6; // au-delà, on ne propose plus ce dosage : trop de comprimés à donner d'un coup
 export const MAX_ML_PER_INTAKE = 30; // volume maximal par prise d'un liquide
@@ -21,6 +26,7 @@ export const SPLITS = ['none', 'half', 'quarter'];
 export const DISPENSES = ['box', 'blister', 'unit'];
 export const RANKS = ['waste', 'cost', 'pills', 'exact'];
 export const SOURCES = ['medvet', 'stock']; // tous les articles Med'Vet, ou seulement les dosages saisis
+export const ROUTES = ['oral', 'inj', 'spot'];
 
 const SPLIT_STEP = { none: 1, half: 0.5, quarter: 0.25 };
 const SPLIT_RANK = { none: 0, half: 1, quarter: 2 };
@@ -28,6 +34,7 @@ const EPS = 1e-9;
 
 export const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
 export const isLiquid = (format) => format.unit === 'mL';
+export const isBand = (format) => format.unit === 'pip';
 
 // --- calcul -------------------------------------------------------------------------
 
@@ -112,6 +119,7 @@ function liquidSupplyFor(format, amount, perDay, days, prefs) {
     kind: 'liquid',
     total,
     unit: box ? 'box' : 'bottle',
+    container: format.container ?? 'flacon',
     count,
     remitted,
     bottle,
@@ -205,6 +213,7 @@ function groupEquivalents(list) {
   const groups = new Map();
   const signature = (o) => {
     const f = o.format;
+    if (isBand(f)) return ['bande', f.species ?? '', f.band ? `${f.band.lo},${f.band.hi},${f.band.excl}` : '', f.volume ?? '', f.boxes?.map((b) => b.blisters).join('/') ?? ''].join('|');
     const liquid = isLiquid(f);
     return [
       liquid ? 'liquide' : f.form ?? '',
@@ -269,6 +278,51 @@ export function plan(drug, ctx) {
   return { status: 'ok', target: t, options: [...inside, ...outside], skipped };
 }
 
+// --- articles choisis selon le poids (spot-on) ----------------------------------------
+
+const inBand = (band, weight) => (band.excl ? weight > band.lo : weight >= band.lo) && (band.hi == null || weight <= band.hi);
+const bandGap = (band, weight) => (inBand(band, weight) ? 0 : weight <= band.lo ? band.lo - weight : weight - band.hi);
+// Position dans la tranche : 0 au milieu, 0,5 aux bords ; une tranche sans limite haute compte pour 0,5.
+const bandCentre = (band, weight) => (band.hi == null ? 0.5 : Math.abs(weight - (band.lo + band.hi) / 2) / Math.max(band.hi - band.lo, EPS));
+
+// Pipettes à fournir pour `applications` applications : la boîte qui laisse le moins de reste.
+function bandSupplyFor(format, applications) {
+  let best = null;
+  for (const box of format.boxes ?? []) {
+    const count = Math.ceil(applications / box.blisters);
+    const candidate = { count, perBox: box.blisters, gtin: box.gtin, leftover: count * box.blisters - applications };
+    if (!best || candidate.leftover < best.leftover || (candidate.leftover === best.leftover && count < best.count)) best = candidate;
+  }
+  return best ? { kind: 'band', applications, ...best, packs: true } : { kind: 'band', applications, packs: null };
+}
+
+/**
+ * Spot-on : l'article dont la tranche de poids (lue dans le libellé du produit) contient le poids du patient.
+ * ctx : { weight, days } ; drug.interval (jours entre deux applications) permet de compter les pipettes.
+ * Renvoie { status ('formats' | 'weight' | 'ok'), options, unread (articles sans tranche lue), applications }.
+ * Sans tranche qui contienne le poids, options reprend les plus proches (ok: false).
+ */
+export function planBand(drug, ctx) {
+  const formats = drug.formats.filter(isBand);
+  const unread = formats.filter((f) => !f.band).length;
+  if (!formats.length) return { status: 'formats', options: [], unread };
+  if (!(ctx.weight > 0)) return { status: 'weight', options: [], unread };
+  const days = Number.isInteger(ctx.days) && ctx.days > 0 ? ctx.days : null;
+  const applications = days && drug.interval > 0 ? Math.ceil(days / drug.interval) : null;
+  const options = formats.filter((f) => f.band).map((format) => ({
+    format,
+    ok: inBand(format.band, ctx.weight),
+    gap: bandGap(format.band, ctx.weight),
+    centre: bandCentre(format.band, ctx.weight),
+    supply: applications ? bandSupplyFor(format, applications) : null,
+  }));
+  const leftover = (o) => (o.supply?.packs ? o.supply.leftover : Infinity);
+  const inside = groupEquivalents(options.filter((o) => o.ok)
+    .sort((a, b) => leftover(a) - leftover(b) || a.centre - b.centre || a.format.name.localeCompare(b.format.name, 'fr')));
+  const near = groupEquivalents(options.filter((o) => !o.ok).sort((a, b) => a.gap - b.gap));
+  return { status: 'ok', options: [...inside, ...near], unread, applications };
+}
+
 // --- textes -------------------------------------------------------------------------
 
 const FRACTIONS = { 0.25: '¼', 0.5: '½', 0.75: '¾' };
@@ -294,6 +348,9 @@ export function tabletSpeech(tablets, unit = 'comprimé') {
 const optNum = (v) => (isNum(v) ? v : null);
 const optInt = (v) => (Number.isInteger(v) && v > 0 ? v : null);
 
+const CONTAINERS = ['ampoule', 'poche', 'seringue', 'cartouche'];
+const validBand = (b) => (b && isNum(b.lo) && (b.hi == null || (isNum(b.hi) && b.hi > b.lo)) ? { lo: b.lo, hi: b.hi ?? null, excl: Boolean(b.excl) } : undefined);
+
 export function normalizeFormat(raw = {}) {
   return {
     name: typeof raw.name === 'string' ? raw.name : '',
@@ -302,7 +359,11 @@ export function normalizeFormat(raw = {}) {
     blisters: optInt(raw.blisters) ?? 1,
     split: SPLITS.includes(raw.split) ? raw.split : 'none',
     price: isNum(raw.price) && raw.price >= 0 ? raw.price : undefined,
-    unit: raw.unit === 'gél.' ? 'gél.' : raw.unit === 'mL' ? 'mL' : 'cp',
+    unit: raw.unit === 'gél.' ? 'gél.' : raw.unit === 'mL' ? 'mL' : raw.unit === 'pip' ? 'pip' : 'cp',
+    container: CONTAINERS.includes(raw.container) ? raw.container : undefined,
+    route: raw.route === 'inj' ? 'inj' : undefined,
+    band: validBand(raw.band),
+    perBox: optInt(raw.perBox) ?? undefined,
     conc: isNum(raw.conc) && raw.conc > 0 ? raw.conc : undefined,
     volume: isNum(raw.volume) && raw.volume > 0 ? raw.volume : undefined,
     bottles: optInt(raw.bottles) ?? undefined,
@@ -321,6 +382,8 @@ export function normalizeDrug(raw = {}) {
     note: typeof raw.note === 'string' ? raw.note : '',
     substance: typeof raw.substance === 'string' && raw.substance ? raw.substance : undefined,
     brand: typeof raw.brand === 'string' && raw.brand ? raw.brand : undefined,
+    route: ROUTES.includes(raw.route) ? raw.route : 'oral',
+    interval: optInt(raw.interval) ?? undefined,
     link: typeof raw.link === 'string' && /^https:\/\//.test(raw.link) ? raw.link : undefined,
     formats: Array.isArray(raw.formats) ? raw.formats.filter((f) => f && typeof f === 'object').map(normalizeFormat) : [],
   };
@@ -377,7 +440,7 @@ export function searchIndex(products, query, limit = 30) {
   if (!words.length) return [];
   const hits = [];
   for (const product of products) {
-    product.h ??= prepare(`${product.b} ${product.d} ${product.a.map((a) => a[0]).join(' ')} ${product.k.map((k) => k[3] ?? '').join(' ')}`);
+    product.h ??= prepare(`${product.b} ${product.d} ${product.f} ${product.a.map((a) => a[0]).join(' ')} ${product.k.map((k) => k[3] ?? '').join(' ')}`);
     if (words.every((w) => product.h.includes(w))) hits.push(product);
   }
   const first = (p) => (prepare(p.b).startsWith(words[0]) ? 0 : 1);
@@ -398,7 +461,8 @@ const mgText = (n) => String(n).replace('.', ',');
 
 // --- substances et articles : croiser tout le catalogue Med'Vet ---------------------------
 
-const stripNote = (name) => name.replace(/\s*\(.*?\)/g, '').trim();
+// « Maropitant (sous forme de citrate) » -> « Maropitant » ; « (S)-Méthoprène » reste entier.
+const stripNote = (name) => name.replace(/^(\S.*?)\s*\([^()]*\)\s*$/, '$1').trim();
 const labelCase = (text) => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
 // Seules associations dosées en mg d'association : somme des deux substances (voir tools/build-medvet-index.py).
 const ASSOCIATIONS = new Map([['acide clavulanique + amoxicilline', 'Amoxicilline + acide clavulanique']]);
@@ -406,53 +470,78 @@ const ASSOCIATIONS = new Map([['acide clavulanique + amoxicilline', 'Amoxicillin
 // Clé d'une substance : sans précision entre parenthèses, casse ni accents ; les associations sont triées.
 export const substanceKey = (label) => label.split('+').map((part) => fold(stripNote(part)).trim()).sort().join(' + ');
 
-// { key, label } d'un produit, ou null s'il n'a pas de dosage exploitable pour une posologie en mg/kg.
+export const routeOf = (product) => product.r ?? 'oral';
+
+// { key, label, route } d'un produit. Oral et injectable : il faut un dosage ou une concentration pour une
+// posologie en mg/kg, une seule substance (ou l'association amoxicilline + acide clavulanique). Spot-on : choisi
+// selon le poids, donc toutes les substances comptent, associées ou non, sans dosage.
 export function substanceOf(product) {
-  if ((product.m ?? product.c) == null) return null;
+  const route = routeOf(product);
   const names = product.a.map((a) => stripNote(a[0]));
   if (names.some((n) => !n)) return null;
-  if (names.length === 1) return { key: substanceKey(names[0]), label: labelCase(names[0]) };
+  if (route === 'spot') {
+    // « S-Methoprene » et « Méthoprène » sont la même substance ; une substance répétée (plusieurs dosages) compte une fois
+    const seen = new Map();
+    for (const n of names.map((x) => x.replace(/^\(?[RS]\)?[-\s]+/i, ''))) if (!seen.has(fold(n))) seen.set(fold(n), n);
+    const sorted = [...seen.values()].sort((a, b) => fold(a).localeCompare(fold(b)));
+    return { key: substanceKey(sorted.join('+')), label: sorted.map((n, i) => (i ? n.toLowerCase() : labelCase(n))).join(' + '), route };
+  }
+  if ((product.m ?? product.c) == null) return null;
+  if (names.length === 1) return { key: substanceKey(names[0]), label: labelCase(names[0]), route };
   const key = substanceKey(names.join('+'));
-  return ASSOCIATIONS.has(key) ? { key, label: ASSOCIATIONS.get(key) } : null;
+  return ASSOCIATIONS.has(key) ? { key, label: ASSOCIATIONS.get(key), route } : null;
 }
 
-// products -> Map(clé -> { label, products[] }), calculé une fois par index
+// products -> Map(voie -> Map(clé -> { label, products[] })), calculé une fois par index
 const substanceCache = new WeakMap();
-export function substanceIndex(products) {
-  let map = substanceCache.get(products);
-  if (!map) {
-    map = new Map();
+export function substanceIndex(products, route = 'oral') {
+  let byRoute = substanceCache.get(products);
+  if (!byRoute) {
+    byRoute = new Map(ROUTES.map((r) => [r, new Map()]));
     for (const product of products) {
       const sub = substanceOf(product);
       if (!sub) continue;
+      const map = byRoute.get(sub.route);
       if (!map.has(sub.key)) map.set(sub.key, { label: sub.label, products: [] });
-      map.get(sub.key).products.push(product);
+      const entry = map.get(sub.key);
+      if (!/[À-ÿ]/.test(entry.label) && /[À-ÿ]/.test(sub.label)) entry.label = sub.label; // libellé accentué de préférence
+      entry.products.push(product);
     }
-    substanceCache.set(products, map);
+    substanceCache.set(products, byRoute);
   }
-  return map;
+  return byRoute.get(route) ?? new Map();
 }
 
-// Substances proposables, par ordre alphabétique : { label, articles }
-export function listSubstances(products) {
-  return [...substanceIndex(products).values()]
+// Substances proposables pour une voie, par ordre alphabétique : { label, articles }
+export function listSubstances(products, route = 'oral') {
+  return [...substanceIndex(products, route).values()]
     .map((s) => ({ label: s.label, articles: s.products.reduce((n, p) => n + p.k.filter((k) => k[0]).length, 0) }))
     .sort((a, b) => fold(a.label).localeCompare(fold(b.label)));
 }
 
-export function brandsOf(products, label) {
-  const entry = substanceIndex(products).get(substanceKey(label));
+export function brandsOf(products, label, route = 'oral') {
+  const entry = substanceIndex(products, route).get(substanceKey(label));
   return entry ? [...new Set(entry.products.map((p) => p.b))].sort((a, b) => fold(a).localeCompare(fold(b))) : [];
 }
 
+const mlText = (v) => `${String(v).replace('.', ',')} mL`;
+const pluralize = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
+
 export function formatPackText(format) {
+  if (isBand(format)) {
+    const vol = format.volume ? ` de ${mlText(format.volume)}` : '';
+    const n = format.boxes?.map((b) => b.blisters) ?? (format.perBox ? [format.perBox] : []);
+    if (n.length > 1) return `pipettes${vol} (boîtes de ${n.slice(0, -1).join(', ')} ou ${n.at(-1)} pipettes)`;
+    return n.length ? `${pluralize(n[0], 'pipette')}${vol}` : 'conditionnement inconnu';
+  }
   if (isLiquid(format)) {
-    const ml = `${String(format.volume ?? '?').replace('.', ',')} mL`;
+    const ml = mlText(format.volume ?? '?');
+    const word = format.container ?? 'flacon';
     if (format.boxes?.length > 1) {
       const list = format.boxes.map((b) => b.blisters);
-      return `flacons de ${ml} (boîtes de ${list.slice(0, -1).join(', ')} ou ${list.at(-1)} flacons)`;
+      return `${word}s de ${ml} (boîtes de ${list.slice(0, -1).join(', ')} ou ${list.at(-1)} ${word}s)`;
     }
-    return format.bottles > 1 ? `${format.bottles} flacons de ${ml}` : `flacon de ${ml}`;
+    return format.bottles > 1 ? `${format.bottles} ${word}s de ${ml}` : `${word} de ${ml}`;
   }
   if (!format.perBlister) return 'conditionnement inconnu';
   const what = format.unit === 'gél.' ? 'gélule' : 'comprimé';
@@ -465,12 +554,13 @@ export function formatPackText(format) {
   return format.blisters > 1 ? `${plural(format.blisters, 'plaquette')} de ${format.perBlister}` : plural(format.perBlister, what);
 }
 
-// Tous les articles (produit + conditionnement lisible) de la substance, prêts pour plan().
-// species : 'CN' | 'CT' | undefined ; brand : restreint à une marque ;
+// Tous les articles (produit + conditionnement lisible) de la substance, prêts pour plan() ou planBand().
+// route : 'oral' (défaut), 'inj' ou 'spot' ; species : 'CN' | 'CT' | undefined ; brand : restreint à une marque ;
 // dispense : en 'blister' ou 'unit' la taille de la boîte ne change rien (on remet des plaquettes ou des
-// comprimés), donc les boîtes d'un même produit sont regroupées ; en 'box' chacune compte.
-export function marketFormats(products, label, { species, brand, dispense = 'blister' } = {}) {
-  const entry = substanceIndex(products).get(substanceKey(label));
+// comprimés), donc les boîtes d'un même produit sont regroupées ; en 'box' chacune compte. Les spot-on sont
+// toujours regroupés par produit : les tailles de boîte sont dans `boxes`, planBand choisit la meilleure.
+export function marketFormats(products, label, { route = 'oral', species, brand, dispense = 'blister' } = {}) {
+  const entry = substanceIndex(products, route).get(substanceKey(label));
   if (!entry) return [];
   const out = new Map();
   for (const product of entry.products) {
@@ -478,12 +568,14 @@ export function marketFormats(products, label, { species, brand, dispense = 'bli
     if (brand && product.b !== brand) continue;
     for (const pack of product.k) {
       if (!pack[0]) continue; // conditionnement illisible : on ne sait pas calculer le reste
-      const key = dispense === 'box' ? `${product.d}|${pack[0]}|${pack[1]}` : `${product.d}|${pack[1]}`;
+      const box = { blisters: pack[0], gtin: pack[3] || undefined };
+      const spot = route === 'spot';
+      const key = spot ? product.d : dispense === 'box' ? `${product.d}|${pack[0]}|${pack[1]}` : `${product.d}|${pack[1]}`;
       const known = out.get(key);
       if (known) {
-        if (!known.boxes.some((b) => b.blisters === pack[0])) known.boxes = [...known.boxes, { blisters: pack[0], gtin: pack[3] || undefined }].sort((a, b) => a.blisters - b.blisters);
+        if (!known.boxes.some((b) => b.blisters === pack[0])) known.boxes = [...known.boxes, box].sort((a, b) => a.blisters - b.blisters);
         // la plus petite boîte sert au calcul
-        if (isLiquid(known)) { if (pack[0] < known.bottles) known.bottles = pack[0]; } else if (pack[0] < known.blisters) known.blisters = pack[0];
+        if (isBand(known)) { if (pack[0] < known.perBox) known.perBox = pack[0]; } else if (isLiquid(known)) { if (pack[0] < known.bottles) known.bottles = pack[0]; } else if (pack[0] < known.blisters) known.blisters = pack[0];
         continue;
       }
       out.set(key, {
@@ -491,8 +583,8 @@ export function marketFormats(products, label, { species, brand, dispense = 'bli
         brand: product.b,
         form: product.f,
         species: product.s,
-        assoc: product.a.length > 1,
-        boxes: [{ blisters: pack[0], gtin: pack[3] || undefined }],
+        assoc: !spot && product.a.length > 1,
+        boxes: [box],
         link: product.l ? (product.l.startsWith('https://') ? product.l : LINK_PREFIX + product.l) : undefined,
       });
     }
@@ -504,7 +596,7 @@ export function marketFormats(products, label, { species, brand, dispense = 'bli
 // dénomination (« Synulox 250 mg », « Clavusan 250 mg + 62,5 mg ») : les marques n'ont pas toutes la même habitude.
 const ASSOCIATION_DOSE = /\d[\d.,]*(?:\s*(?:mg)?\s*[/+]\s*\d[\d.,]*)*\s*mg/i;
 export function productName(product) {
-  if (product.a.length > 1) {
+  if (product.u === 'pip' || product.a.length > 1) {
     const dose = product.d.match(ASSOCIATION_DOSE)?.[0];
     return dose ? `${product.b} ${dose.replace(/\s*mg/gi, ' mg').replace(/\s+/g, ' ')}` : product.d;
   }
@@ -513,18 +605,39 @@ export function productName(product) {
 }
 
 // Libellé lisible d'un conditionnement du produit : [plaquettes, comprimés par plaquette, texte d'origine]
-export function packText(pack, unit = 'cp') {
+export function packText(pack, unit = 'cp', container = 'flacon') {
   const [blisters, per, text] = pack;
   if (!blisters) return text || 'Conditionnement à saisir';
-  if (unit === 'mL') return `${blisters > 1 ? `${blisters} flacons de` : 'flacon de'} ${String(per).replace('.', ',')} mL`;
+  if (unit === 'mL') return `${blisters > 1 ? `${blisters} ${container}s de` : `${container} de`} ${mlText(per)}`;
+  if (unit === 'pip') return `${pluralize(blisters, 'pipette')}${per ? ` de ${mlText(per)}` : ''}`;
   const what = unit === 'gél.' ? 'gélule' : 'comprimé';
   const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
   return blisters === 1 ? `${plural(per, what)}` : `${plural(blisters, 'plaquette')} de ${per}`;
 }
 
 export function formatFromProduct(product, pack) {
+  if (product.u === 'pip') {
+    const [lo, hi, excl] = product.w ?? [];
+    return normalizeFormat({
+      name: productName(product),
+      unit: 'pip',
+      band: product.w ? { lo, hi, excl: Boolean(excl) } : undefined,
+      perBox: pack[0],
+      volume: pack[1] || undefined,
+      gtin: pack[3] || undefined,
+    });
+  }
   if (product.u === 'mL') {
-    return normalizeFormat({ name: productName(product), unit: 'mL', conc: product.c, volume: pack[1], bottles: pack[0] ?? 1, gtin: pack[3] || undefined });
+    return normalizeFormat({
+      name: productName(product),
+      unit: 'mL',
+      conc: product.c,
+      volume: pack[1],
+      bottles: pack[0] ?? 1,
+      container: product.ct,
+      route: product.r === 'inj' ? 'inj' : undefined,
+      gtin: pack[3] || undefined,
+    });
   }
   return normalizeFormat({
     name: productName(product),
@@ -542,7 +655,8 @@ export function drugFromProduct(product, pack) {
   return normalizeDrug({
     name: substance ? substance.label : product.b,
     substance: substance?.label,
+    route: routeOf(product),
     link: product.l ? (product.l.startsWith('https://') ? product.l : LINK_PREFIX + product.l) : undefined,
-    formats: [formatFromProduct(product, pack)],
+    formats: routeOf(product) === 'spot' ? [] : [formatFromProduct(product, pack)],
   });
 }
