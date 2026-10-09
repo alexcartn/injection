@@ -527,7 +527,19 @@ function pickNew(count, last) {
   return i;
 }
 
+function hideEgg() {
+  egg.hidden = true;
+  eggImg.removeAttribute('src'); // arrête l'animation ; la suivante repartira de zéro
+  eggLive.textContent = '';
+  heart.setAttribute('aria-expanded', 'false');
+}
+
+// Un appui sur le coeur ouvre la surprise, un second appui la referme.
 heart.addEventListener('click', () => {
+  if (!egg.hidden) {
+    hideEgg();
+    return;
+  }
   lastAnimal = pickNew(ANIMALS.length, lastAnimal);
   const animal = ANIMALS[lastAnimal];
 
@@ -545,6 +557,7 @@ heart.addEventListener('click', () => {
   eggLive.textContent = `Surprise : ${animal.label}`; // annoncé aux lecteurs d'écran, rien d'affiché
 
   egg.hidden = false;
+  heart.setAttribute('aria-expanded', 'true');
   egg.classList.remove('pop');
   void egg.offsetWidth; // relance l'animation d'apparition
   egg.classList.add('pop');
