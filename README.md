@@ -5,7 +5,7 @@ Reprend le Google Sheet "Injections et perf hospit" : dose (mL) = poids (kg) x c
 
 Un second onglet, « Ordonnance », calcule quel dosage de comprimé et combien de plaquettes remettre selon le poids et la durée du traitement.
 
-Fichiers statiques uniquement (HTML, CSS, JS), aucun build, aucune dépendance.
+Fichiers statiques uniquement (HTML, CSS, JS, un index JSON), aucun build, aucune dépendance.
 
 ## Utilisation
 
@@ -28,7 +28,7 @@ Fichiers statiques uniquement (HTML, CSS, JS), aucun build, aucune dépendance.
 
 Onglet « Ordonnance » sous la barre du poids (le poids et le filtre Chien / Chat sont communs aux deux onglets). L'appli ouvre toujours sur « Injections ».
 
-- Catalogue : les médicaments en comprimés ou gélules que la clinique remet. « Ajouter un médicament » permet la saisie à la main (nom, dosages en stock, conditionnement). Si l'index Med'Vet est installé (voir « Données Med'Vet »), la recherche par nom ou principe actif reprend le dosage par comprimé, le conditionnement (plaquettes par boîte, comprimés par plaquette) et le caractère sécable. Tout reste modifiable. Le catalogue est enregistré sur l'appareil, comme les doses d'injection (il n'est pas partagé entre appareils).
+- Catalogue : les médicaments en comprimés ou gélules que la clinique remet. « Ajouter un médicament » permet la saisie à la main (nom, dosages en stock, conditionnement). La recherche Med'Vet (nom ou principe actif) reprend le dosage par comprimé, le conditionnement (plaquettes par boîte, comprimés par plaquette) et le caractère sécable. Tout reste modifiable. Le catalogue est enregistré sur l'appareil, comme les doses d'injection (il n'est pas partagé entre appareils).
 - Posologie : jamais préremplie, à saisir pour chaque médicament depuis la fiche (lien « Fiche Med'Vet » dans la carte) : dose en mg/kg (fourchette possible), exprimée par prise ou par jour, et nombre de prises par jour. Tant qu'elle manque, aucun résultat n'est affiché.
 - Durée : en jours, saisie libre ou raccourcis (3, 5, 7, 10, 14, 21, 30). Comme le poids, elle n'est jamais mémorisée et se vide avec lui.
 - Résultat par médicament : le dosage retenu, le nombre de comprimés par prise (entier, demi ou quart), puis ce qu'il faut remettre pour la durée (plaquettes, boîtes ou comprimés à l'unité), avec le reste et les jours qu'il couvre. Les autres dosages en stock sont repliés dessous, avec leur propre reste.
@@ -53,23 +53,23 @@ Pictogrammes de section au trait (seringue, lune, souffle, gélule, flamme, écl
 Polices hébergées dans `fonts/` (donc disponibles hors connexion), sous licence SIL OFL 1.1 :
 Atkinson Hyperlegible Next (interface) et Barlow Condensed (chiffres et petites capitales). Les textes de licence sont à côté des fichiers.
 
-## Données Med'Vet (facultatif)
+## Données Med'Vet
 
-L'index `medvet-oral.json` (comprimés et gélules pour chien et chat, tirés d'un export du recueil Med'Vet, marque du SIMV) n'est volontairement pas dans le dépôt : les mentions légales de Med'Vet ne disent rien sur la réutilisation de ses données, et GitHub Pages le rendrait téléchargeable par tous. Sans lui, la recherche est masquée et les médicaments se saisissent à la main.
+`medvet-oral.json` est l'index des comprimés et gélules pour chien et chat (500 produits) tiré d'un export du recueil Med'Vet (marque du SIMV), publié avec l'accord du SIMV. Il ne contient que des faits de catalogue : nom, principes actifs et dosage, espèces, conditionnement, caractère sécable, adresse de la fiche. Ni posologie, ni texte de RCP, ni image. Il ne se charge qu'à la première recherche, puis reste en cache pour le mode hors connexion. S'il manque, la recherche est masquée et les médicaments se saisissent à la main.
 
-Pour l'activer : générer le fichier à la racine, ajouter `'medvet-oral.json'` à la liste `ASSETS` de `sw.js` (pour le mode hors connexion), incrémenter `CACHE`, puis publier.
+Il se régénère avec :
 
 ```sh
 python3 -I tools/build-medvet-index.py chemin/vers/medicament.xlsx medvet-oral.json
 ```
 
-Il ne contient que des faits de catalogue : nom, principes actifs et dosage, espèces, conditionnement, caractère sécable, adresse de la fiche. Ni posologie, ni texte de RCP, ni image. Ne pas l'élargir sans l'accord du SIMV (contact@simv.org). Il sert à préremplir : la clinique vérifie sur la fiche du médicament.
+L'export complet (posologies, textes de RCP, images) n'est pas dans le dépôt, et l'index ne doit pas être élargi au-delà de ces faits sans nouvel accord du SIMV (contact@simv.org). Il sert à préremplir : la clinique vérifie sur la fiche du médicament.
 
 ## Crédits
 
 - Polices : Atkinson Hyperlegible Next et Barlow Condensed, licence SIL OFL 1.1 (dossier `fonts/`).
 - Pictogrammes de section : Lucide, licence ISC (`icons/LICENSE-lucide.txt`).
-- Données produits facultatives de l'ordonnance : Med'Vet (SIMV), voir ci-dessus.
+- Données produits de l'ordonnance : Med'Vet (SIMV), voir ci-dessus.
 - Clin d'œil caché dans le pied de page (« Made with ♥ pour Dr Matz ») : un toucher sur le cœur fait apparaître un animal tiré au hasard, un second toucher le fait disparaître, et le suivant en montre un autre (jamais deux fois le même d'affilée). Animations Noto Emoji © Google, licence CC BY 4.0, réduites à 160 px et recompressées en WebP animé (`animals/`, détail dans `animals/LICENSE.txt`). Elles sont embarquées : rien n'est chargé depuis Internet, et ça marche hors connexion. Avec « réduire les animations » activé sur l'appareil, un émoji fixe remplace l'animation.
 
 ## Lancer en local
