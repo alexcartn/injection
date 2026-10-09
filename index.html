@@ -26,6 +26,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div class="chrome" id="chrome">
   <header class="top">
     <div class="brand">
       <svg class="mark" viewBox="84 84 344 344" width="30" height="30" aria-hidden="true" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
@@ -76,21 +77,27 @@
 
     <p id="warn" class="warn" role="alert" hidden></p>
   </div>
+  </div>
 
   <p id="hint" class="hint">Saisissez le poids de l'animal : toutes les doses se calculent.</p>
 
-  <div class="prefs" id="prefs">
-    <label for="round">Arrondi à la seringue</label>
-    <select id="round" class="pick">
-      <option value="0">Aucun</option>
-      <option value="0.01">0,01 mL</option>
-      <option value="0.05">0,05 mL</option>
-      <option value="0.1">0,1 mL</option>
-    </select>
-    <span id="round-note" class="prefs-note" hidden>Si l'arrondi change la dose de plus de 10 %, la valeur exacte est conservée.</span>
-  </div>
+  <details class="prefs" id="prefs">
+    <summary>Réglages <span class="prefs-now" id="prefs-now">arrondi : aucun</span></summary>
+    <div class="prefs-body">
+      <label for="round">Arrondi à la seringue</label>
+      <select id="round" class="pick">
+        <option value="0">Aucun</option>
+        <option value="0.01">0,01 mL</option>
+        <option value="0.05">0,05 mL</option>
+        <option value="0.1">0,1 mL</option>
+      </select>
+      <span id="round-note" class="prefs-note" hidden>Si l'arrondi change la dose de plus de 10 %, la valeur exacte est conservée.</span>
+    </div>
+  </details>
 
   <main id="main"></main>
+
+  <nav class="dock" id="dock" aria-label="Aller à une section" hidden></nav>
 
   <footer id="foot">
     <p class="disclaimer">Aide au calcul. Les doses affichées sont celles enregistrées dans l'appli : à vérifier avant chaque injection.</p>

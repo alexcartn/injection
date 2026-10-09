@@ -29,6 +29,10 @@ const warn = document.getElementById('warn');
 const hint = document.getElementById('hint');
 const roundSelect = document.getElementById('round');
 const roundNote = document.getElementById('round-note');
+const prefsNow = document.getElementById('prefs-now');
+const dock = document.getElementById('dock');
+const chrome = document.getElementById('chrome');
+const brandRow = document.querySelector('.top');
 const editToggle = document.getElementById('edit-toggle');
 const themeToggle = document.getElementById('theme-toggle');
 
@@ -78,6 +82,7 @@ const state = {
   weight: null,
   editing: false,
   done: new Set(), // médicaments cochés "prélevés" ; vidé à chaque nouveau poids
+  openEdit: new Set(), // sections dépliées dans l'éditeur
 };
 
 const save = () => storeSet(STORE_KEY, JSON.stringify(state.sections));
@@ -165,9 +170,11 @@ const matchesSpecies = (item) =>
 
 function renderView() {
   const cards = [];
+  const shown = [];
   for (const section of state.sections) {
     const items = section.items.filter(matchesSpecies);
     if (!items.length) continue;
+    shown.push(section);
     cards.push(
       el('section', { class: 'card' },
         el('h2', {}, el('span', {}, section.title), el('span', { class: 'unit' }, section.unit)),
@@ -177,7 +184,69 @@ function renderView() {
     );
   }
   main.replaceChildren(...(cards.length ? cards : [el('p', { class: 'empty' }, 'Aucun médicament à afficher.')]));
+  buildDock(cards, shown);
 }
+
+// --- barre de sections (téléphone) : saut direct + section courante en surbrillance ----------
+
+let dockCards = [];
+let dockCurrent = -1;
+let dockLock = -1; // section touchée : reste active même si la page ne peut pas défiler assez loin
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+function buildDock(cards, sections) {
+  dockCards = cards;
+  dockCurrent = -1;
+  dockLock = -1;
+  dock.replaceChildren(...cards.map((card, i) => el('button', {
+    type: 'button',
+    onclick: () => {
+      dockLock = i;
+      markDock(i);
+      card.scrollIntoView({ behavior: reduceMotion.matches ? 'auto' : 'smooth', block: 'start' });
+    },
+  }, sections[i].title || 'Sans titre')));
+  dock.hidden = cards.length < 2;
+  updateDock();
+}
+
+function markDock(current) {
+  if (current === dockCurrent) return;
+  dockCurrent = current;
+  [...dock.children].forEach((button, i) => {
+    if (i === current) button.setAttribute('aria-current', 'true');
+    else button.removeAttribute('aria-current');
+  });
+  const active = dock.children[current];
+  dock.scrollTo({ left: active.offsetLeft - (dock.clientWidth - active.offsetWidth) / 2 });
+}
+
+function updateDock() {
+  if (dock.hidden || !dockCards.length) return;
+  if (dockLock >= 0) return markDock(dockLock);
+  // la section courante est la dernière dont le haut a passé le bas de la barre collante
+  const line = chrome.getBoundingClientRect().bottom + 24;
+  let current = 0;
+  dockCards.forEach((card, i) => { if (card.getBoundingClientRect().top <= line) current = i; });
+  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = dockCards.length - 1;
+  markDock(current);
+}
+
+// dès que l'utilisatrice reprend la main sur le défilement, la détection automatique reprend
+for (const type of ['wheel', 'touchstart', 'keydown']) {
+  window.addEventListener(type, () => { dockLock = -1; }, { passive: true });
+}
+
+let dockFrame = 0;
+window.addEventListener('scroll', () => {
+  if (!dockFrame) dockFrame = requestAnimationFrame(() => { dockFrame = 0; updateDock(); });
+}, { passive: true });
+
+// Hauteur de la partie qui reste collée : sert au décalage des sauts de section.
+new ResizeObserver(() => {
+  const sticky = chrome.offsetHeight - brandRow.offsetHeight;
+  document.documentElement.style.setProperty('--stick-h', `${sticky}px`);
+}).observe(chrome);
 
 // Type de set de perfusion : sert à convertir les mL/h en gouttes par minute.
 function dripPicker() {
@@ -294,18 +363,29 @@ function renderEdit() {
   );
 }
 
-function editCard(section, index) {
-  return el('section', { class: 'card card-edit' },
+function editCard(section) {
+  const title = el('span', {}, section.title || 'Sans titre');
+  const n = section.items.length;
+  const card = el('details', { class: 'card-edit', open: state.openEdit.has(section) },
+    el('summary', {},
+      title,
+      el('span', { class: 'es-count' }, `${n} médicament${n > 1 ? 's' : ''} · ${section.unit}`),
+    ),
     el('div', { class: 'edit-head' },
-      field('Section', textInput(section.title, (v) => { section.title = v; }), 'grow'),
+      field('Section', textInput(section.title, (v) => { section.title = v; title.textContent = v || 'Sans titre'; }), 'grow'),
       field('Unité', select(UNITS.map((u) => [u, u]), section.unit, (v) => { section.unit = v; save(); render(); })),
     ),
     section.items.map((item) => editRow(section, item)),
     el('div', { class: 'edit-foot' },
-      button('Ajouter un médicament', () => addItem(section, index)),
+      button('Ajouter un médicament', () => addItem(section)),
       button('Supprimer la section', () => removeSection(section), 'btn-danger'),
     ),
   );
+  card.addEventListener('toggle', () => {
+    if (card.open) state.openEdit.add(section);
+    else state.openEdit.delete(section);
+  });
+  return card;
 }
 
 function editRow(section, item) {
@@ -333,11 +413,12 @@ function editRow(section, item) {
   );
 }
 
-function addItem(section, index) {
+function addItem(section) {
   section.items.push({ name: '', min: null });
+  state.openEdit.add(section);
   save();
   render();
-  const rows = main.children[index].querySelectorAll('.erow');
+  const rows = main.children[state.sections.indexOf(section)].querySelectorAll('.erow');
   rows[rows.length - 1].querySelector('input').focus();
 }
 
@@ -349,12 +430,14 @@ function removeItem(section, item) {
 }
 
 function addSection() {
-  state.sections.push({ title: 'Nouvelle section', unit: 'mL', items: [{ name: '', min: null }] });
+  const section = { title: 'Nouvelle section', unit: 'mL', items: [{ name: '', min: null }] };
+  state.sections.push(section);
+  state.openEdit.add(section);
   save();
   render();
   const card = main.children[state.sections.length - 1];
   card.scrollIntoView({ block: 'center' });
-  card.querySelector('input').select();
+  card.querySelector('.edit-head input').select();
 }
 
 function removeSection(section) {
@@ -367,6 +450,7 @@ function removeSection(section) {
 function resetAll() {
   if (!confirm('Rétablir toutes les doses d’origine ? Les modifications faites dans l’appli seront perdues.')) return;
   state.sections = structuredClone(DEFAULT_SECTIONS);
+  state.openEdit.clear();
   storeDelete(STORE_KEY);
   render();
 }
@@ -420,6 +504,9 @@ document.querySelector('.weight').addEventListener('click', (e) => {
 
 function syncRoundNote() {
   roundNote.hidden = !state.prefs.round;
+  prefsNow.textContent = state.prefs.round
+    ? `arrondi : ${fmtCoef.format(state.prefs.round)} mL`
+    : 'arrondi : aucun';
 }
 roundSelect.value = String(state.prefs.round);
 syncRoundNote();
