@@ -17,14 +17,3 @@ export const ANIMALS = [
   { file: 'hibou.webp', emoji: '🦉', label: 'Hibou' },
   { file: 'singe.webp', emoji: '🐒', label: 'Singe' },
 ];
-
-export const CAPTIONS = [
-  'Dose de bonne humeur administrée.',
-  'Prescription du jour : un sourire.',
-  'Aucune contre-indication.',
-  'À renouveler autant que nécessaire.',
-  'Effet immédiat, sans arrondi.',
-  'Voie d’administration : le câlin.',
-  'Le meilleur patient de la journée.',
-  'Posologie : un sourire par jour.',
-];

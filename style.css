@@ -990,10 +990,6 @@ footer {
 /* l'attribut hidden doit gagner sur les règles d'affichage ci-dessus */
 .egg img[hidden],
 .egg-emoji[hidden] { display: none; }
-.egg figcaption {
-  font: 600 var(--t-sm) / 1.3 var(--font-ui);
-  max-width: 28ch;
-}
 .egg small {
   color: var(--ink-2);
   font-size: var(--t-xs);

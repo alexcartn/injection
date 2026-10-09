@@ -1,6 +1,6 @@
 import { DEFAULT_SECTIONS } from './data.js';
 import { ICONS } from './section-icons.js';
-import { ANIMALS, CAPTIONS } from './animals.js';
+import { ANIMALS } from './animals.js';
 
 const STORE_KEY = 'injection:sections:v1';
 const SPECIES_KEY = 'injection:species';
@@ -516,9 +516,8 @@ const heart = document.getElementById('heart');
 const egg = document.getElementById('egg');
 const eggImg = document.getElementById('egg-img');
 const eggEmoji = document.getElementById('egg-emoji');
-const eggCap = document.getElementById('egg-cap');
+const eggLive = document.getElementById('egg-live');
 let lastAnimal = -1;
-let lastCaption = -1;
 
 // Tirage au hasard sans jamais répéter le précédent.
 function pickNew(count, last) {
@@ -530,7 +529,6 @@ function pickNew(count, last) {
 
 heart.addEventListener('click', () => {
   lastAnimal = pickNew(ANIMALS.length, lastAnimal);
-  lastCaption = pickNew(CAPTIONS.length, lastCaption);
   const animal = ANIMALS[lastAnimal];
 
   if (reduceMotion.matches) {
@@ -544,7 +542,7 @@ heart.addEventListener('click', () => {
     eggImg.alt = animal.label;
     eggImg.src = `animals/${animal.file}`;
   }
-  eggCap.textContent = CAPTIONS[lastCaption];
+  eggLive.textContent = `Surprise : ${animal.label}`; // annoncé aux lecteurs d'écran, rien d'affiché
 
   egg.hidden = false;
   egg.classList.remove('pop');
