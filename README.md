@@ -20,6 +20,13 @@ Bouton "Modifier" : coefficient (et dose max pour une fourchette), nom, voie, es
 Les modifications sont enregistrées dans le navigateur de l'appareil (elles ne sont pas partagées entre appareils).
 "Rétablir les doses d'origine" revient aux valeurs de `data.js`.
 
+## Design
+
+Direction « instrument de précision » : dose en grand, pointillés guides du nom vers la valeur, voie d'administration encadrée, unités toujours en casse d'origine. Le contexte de design est décrit dans `.impeccable.md`.
+
+Polices hébergées dans `fonts/` (donc disponibles hors connexion), sous licence SIL OFL 1.1 :
+Atkinson Hyperlegible Next (interface) et Barlow Condensed (chiffres et petites capitales). Les textes de licence sont à côté des fichiers.
+
 ## Lancer en local
 
 ```sh

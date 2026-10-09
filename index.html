@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Injections et perf hospit</title>
   <meta name="description" content="Calcul des doses d'injection et de perfusion selon le poids de l'animal.">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#f8f7ee">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -17,15 +17,35 @@
     try {
       if (localStorage.getItem('injection:theme') === 'dark') {
         document.documentElement.dataset.theme = 'dark';
-        document.querySelector('meta[name="theme-color"]').content = '#162220';
+        document.querySelector('meta[name="theme-color"]').content = '#141912';
       }
     } catch (e) { /* stockage indisponible : thème clair */ }
   </script>
+  <link rel="preload" href="fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/barlow-condensed-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="top">
-    <h1>Injections et perf hospit</h1>
+    <div class="brand">
+      <svg class="mark" viewBox="84 84 344 344" width="30" height="30" aria-hidden="true" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <g transform="rotate(-45 256 256) translate(4 0)">
+          <line x1="96" y1="256" x2="150" y2="256" stroke-width="16"/>
+          <rect x="150" y="238" width="22" height="36" rx="4" fill="currentColor" stroke="none"/>
+          <rect x="172" y="216" width="170" height="80" rx="12" stroke-width="22"/>
+          <g class="mark-ticks" stroke-width="14">
+            <line x1="212" y1="216" x2="212" y2="244"/>
+            <line x1="248" y1="216" x2="248" y2="244"/>
+            <line x1="284" y1="216" x2="284" y2="244"/>
+            <line x1="320" y1="216" x2="320" y2="244"/>
+          </g>
+          <line x1="342" y1="204" x2="342" y2="308" stroke-width="22"/>
+          <line x1="342" y1="256" x2="398" y2="256" stroke-width="22"/>
+          <line x1="398" y1="222" x2="398" y2="290" stroke-width="22"/>
+        </g>
+      </svg>
+      <h1>Injections et perf hospit</h1>
+    </div>
     <div class="top-actions">
       <button type="button" id="theme-toggle" class="icon-btn" aria-pressed="false" aria-label="Mode sombre" title="Mode sombre">
         <svg class="icon-moon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -56,6 +76,8 @@
 
     <p id="warn" class="warn" role="alert" hidden></p>
   </div>
+
+  <p id="hint" class="hint">Saisissez le poids de l'animal : toutes les doses se calculent.</p>
 
   <main id="main"></main>
 

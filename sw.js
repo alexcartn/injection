@@ -1,6 +1,6 @@
 // Service worker : l'appli fonctionne hors connexion.
 // Incrémenter CACHE à chaque déploiement pour forcer la mise à jour des fichiers.
-const CACHE = 'injection-v2';
+const CACHE = 'injection-v3';
 const ASSETS = [
   './',
   'index.html',
@@ -12,6 +12,9 @@ const ASSETS = [
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/apple-touch-icon.png',
+  'fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2',
+  'fonts/barlow-condensed-latin-600-normal.woff2',
+  'fonts/barlow-condensed-latin-700-normal.woff2',
 ];
 
 self.addEventListener('install', (event) => {

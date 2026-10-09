@@ -11,12 +11,13 @@ const fmtCoef = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 4 });
 const fmtWeight = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
 
 const THEME_KEY = 'injection:theme';
-const THEME_COLOR = { light: '#ffffff', dark: '#162220' };
+const THEME_COLOR = { light: '#f8f7ee', dark: '#141912' };
 
 const main = document.getElementById('main');
 const weightInput = document.getElementById('weight');
 const weightClear = document.getElementById('weight-clear');
 const warn = document.getElementById('warn');
+const hint = document.getElementById('hint');
 const editToggle = document.getElementById('edit-toggle');
 const themeToggle = document.getElementById('theme-toggle');
 
@@ -130,26 +131,26 @@ function rowsFor(items, section) {
   return out;
 }
 
+// Une ligne : nom ..... dose, puis voie / note / coefficient en dessous.
 function row(item, section) {
   const dose = doseText(item);
   const chip = SPECIES_LABEL[item.species];
+  const coef = coefText(item, section.unit);
+  const doseClass = ['dose', !dose && 'dose-empty', isNum(item.max) && 'dose-range'].filter(Boolean).join(' ');
   return el('div', { class: 'row' },
-    el('div', { class: 'row-main' },
-      el('div', { class: 'name' },
-        item.name || 'Sans nom',
-        chip && el('span', { class: `chip chip-${item.species}` }, chip),
-      ),
-      (item.route || item.note) && el('div', { class: 'meta' },
-        item.route && el('span', { class: 'route' }, item.route),
-        item.note && el('span', { class: 'note' }, item.note),
-      ),
+    el('div', { class: 'name' },
+      item.name || 'Sans nom',
+      chip && el('span', { class: `chip chip-${item.species}` }, chip),
     ),
-    el('div', { class: 'row-dose' },
-      el('div', { class: dose ? 'dose' : 'dose dose-empty' },
-        dose ?? '–',
-        dose && el('span', { class: 'dose-unit' }, section.unit),
-      ),
-      el('div', { class: 'coef' }, coefText(item, section.unit)),
+    el('span', { class: 'leader', 'aria-hidden': 'true' }),
+    el('div', { class: doseClass },
+      dose ?? '–',
+      dose && el('span', { class: 'dose-unit' }, section.unit),
+    ),
+    (item.route || item.note || coef) && el('div', { class: 'sub' },
+      item.route && el('span', { class: 'route' }, item.route),
+      item.note && el('span', { class: 'note' }, item.note),
+      coef && el('span', { class: 'coef' }, coef),
     ),
   );
 }
@@ -294,6 +295,7 @@ function updateWeight() {
   const invalid = text.trim() !== '' && !state.weight;
   weightInput.setAttribute('aria-invalid', String(invalid));
   weightClear.hidden = text === '';
+  hint.hidden = text !== '';
 
   let message = '';
   if (invalid) message = 'Poids invalide.';
