@@ -32,6 +32,7 @@ const roundSelect = document.getElementById('round');
 const roundNote = document.getElementById('round-note');
 const prefsNow = document.getElementById('prefs-now');
 const petInput = document.getElementById('pet-name');
+const notesInput = document.getElementById('pet-notes');
 const printBtn = document.getElementById('print');
 const printNote = document.getElementById('print-note');
 const printList = document.getElementById('print-sections');
@@ -99,6 +100,7 @@ const state = {
   prefs: loadPrefs(),
   weight: null,
   petName: '', // comme le poids, jamais mémorisé : propre au patient en cours
+  petNotes: '', // idem : texte libre imprimé dans le cadre de notes de la fiche
   editing: false,
   done: new Set(), // médicaments cochés "prélevés" ; vidé à chaque nouveau poids
   openEdit: new Set(), // sections dépliées dans l'éditeur
@@ -522,9 +524,11 @@ function updateWeight() {
   hint.hidden = text !== '';
 
   // un poids vidé = patient suivant : le nom du précédent ne doit jamais se retrouver sur sa fiche
-  if (text === '' && state.petName) {
+  if (text === '' && (state.petName || state.petNotes)) {
     state.petName = '';
+    state.petNotes = '';
     petInput.value = '';
+    notesInput.value = '';
   }
   printBtn.disabled = !state.weight;
   printNote.textContent = state.weight
@@ -559,7 +563,11 @@ document.querySelector('.weight').addEventListener('click', (e) => {
 const isPrinted = (section) => !state.prefs.printOff.includes(section.title);
 
 const sheetNotes = document.getElementById('sheet-notes');
-const syncNotes = () => sheetNotes.classList.toggle('print-off', !state.prefs.printNotes);
+const syncNotes = () => {
+  sheetNotes.classList.toggle('print-off', !state.prefs.printNotes);
+  // sans cadre de notes sur la fiche, saisir une note serait trompeur : le champ est grisé
+  notesInput.disabled = !state.prefs.printNotes;
+};
 
 // Une case par section : décochée = absente de la fiche imprimée (choix mémorisé).
 // La dernière case règle la zone de notes à remplir à la main.
@@ -583,7 +591,7 @@ function buildPrintChips() {
     savePrefs();
     syncNotes();
   });
-  chips.push(el('label', { class: 'pchip pchip-notes' }, notes, el('span', {}, 'Zone de notes')));
+  chips.push(el('label', { class: 'pchip pchip-notes' }, notes, el('span', {}, 'Notes et lignes à remplir')));
 
   printList.replaceChildren(...chips);
   syncNotes();
@@ -597,6 +605,7 @@ const pad2 = (n) => String(n).padStart(2, '0');
 function fillSheet() {
   const now = new Date();
   setText('sh-name', state.petName);
+  setText('sn-text', state.petNotes);
   setText('sh-species', speciesText());
   setText('sh-weight', state.weight ? `${fmtWeight.format(state.weight)} kg` : '');
   setText('sh-date', now.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' }));
@@ -619,6 +628,7 @@ window.addEventListener('beforeprint', fillSheet);
 window.addEventListener('afterprint', () => { document.title = pageTitle; });
 
 petInput.addEventListener('input', () => { state.petName = petInput.value.trim(); });
+notesInput.addEventListener('input', () => { state.petNotes = notesInput.value.trimEnd(); });
 printBtn.addEventListener('click', () => { fillSheet(); window.print(); });
 
 // --- arrondi à la seringue ------------------------------------------------------

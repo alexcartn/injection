@@ -93,6 +93,10 @@
           <span class="field-label">Nom de l'animal</span>
           <input id="pet-name" class="text" type="text" autocomplete="off" maxlength="60" placeholder="Facultatif : sinon à écrire à la main">
         </label>
+        <label class="pref-field">
+          <span class="field-label">Notes pour la fiche</span>
+          <textarea id="pet-notes" class="text" rows="3" maxlength="500" placeholder="Ex. : à jeun depuis 20h, recontrôle demain matin"></textarea>
+        </label>
         <fieldset class="pchips">
           <legend>Sections à imprimer</legend>
           <div id="print-sections" class="pchips-list"></div>
@@ -158,6 +162,7 @@
   <!-- Visible uniquement à l'impression : lignes pour écrire à la main -->
   <section class="sheet-notes" id="sheet-notes">
     <h3>Notes et observations</h3>
+    <p class="sn-text" id="sn-text"></p>
     <div class="sn-lines"><i></i><i></i><i></i><i></i><i></i></div>
   </section>
 
