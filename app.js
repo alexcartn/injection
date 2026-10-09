@@ -1,4 +1,5 @@
 import { DEFAULT_SECTIONS } from './data.js';
+import { ICONS } from './section-icons.js';
 
 const STORE_KEY = 'injection:sections:v1';
 const SPECIES_KEY = 'injection:species';
@@ -52,12 +53,23 @@ function storeDelete(key) {
   try { localStorage.removeItem(key); } catch { /* stockage indisponible */ }
 }
 
+// Données enregistrées avant l'arrivée des icônes : on rend l'icône d'origine aux sections
+// d'origine. Une icône volontairement retirée est enregistrée vide, donc jamais écrasée.
+function withIcons(sections) {
+  for (const section of sections) {
+    if ('icon' in section) continue;
+    const original = DEFAULT_SECTIONS.find((d) => d.title === section.title);
+    if (original?.icon) section.icon = original.icon;
+  }
+  return sections;
+}
+
 function loadSections() {
   const raw = storeGet(STORE_KEY);
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.every((s) => s && Array.isArray(s.items))) return parsed;
+      if (Array.isArray(parsed) && parsed.every((s) => s && Array.isArray(s.items))) return withIcons(parsed);
     } catch { /* données corrompues : on repart des valeurs d'origine */ }
   }
   return structuredClone(DEFAULT_SECTIONS);
@@ -116,6 +128,19 @@ function el(tag, attrs = {}, ...children) {
     if (child != null && child !== false) node.append(child);
   }
   return node;
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Pictogramme d'une section, ou null si la section n'en a pas. Le contenu vient de section-icons.js.
+function iconNode(name) {
+  const icon = ICONS[name];
+  if (!icon) return null;
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = icon.markup;
+  return svg;
 }
 
 const coefUnit = (unit) => (unit === 'mL/h' ? 'mL/kg/h' : 'mL/kg');
@@ -184,7 +209,13 @@ function renderView() {
     shown.push(section);
     cards.push(
       el('section', { class: isPrinted(section) ? 'card' : 'card print-off' },
-        el('h2', {}, el('span', {}, section.title), el('span', { class: 'unit' }, section.unit)),
+        el('h2', {},
+          el('span', { class: 'st' },
+            iconNode(section.icon) && el('span', { class: 'si' }, iconNode(section.icon)),
+            el('span', {}, section.title),
+          ),
+          el('span', { class: 'unit' }, section.unit),
+        ),
         section.unit === 'mL/h' && dripPicker(),
         el('div', { class: 'rows' }, rowsFor(items, section)),
       ),
@@ -212,7 +243,9 @@ function buildDock(cards, sections) {
       markDock(i);
       card.scrollIntoView({ behavior: reduceMotion.matches ? 'auto' : 'smooth', block: 'start' });
     },
-  }, sections[i].title || 'Sans titre')));
+  },
+  iconNode(sections[i].icon) && el('span', { class: 'di' }, iconNode(sections[i].icon)),
+  el('span', { class: 'dl' }, sections[i].title || 'Sans titre'))));
   dock.hidden = cards.length < 2;
   updateDock();
 }
@@ -371,16 +404,20 @@ function renderEdit() {
 }
 
 function editCard(section) {
-  const title = el('span', {}, section.title || 'Sans titre');
+  const title = el('span', { class: 'es-title' }, section.title || 'Sans titre');
+  const badge = el('span', { class: 'si' }, iconNode(section.icon));
   const n = section.items.length;
+  const iconChoices = [['', 'Aucune'], ...Object.entries(ICONS).map(([key, icon]) => [key, icon.label])];
   const card = el('details', { class: 'card-edit', open: state.openEdit.has(section) },
     el('summary', {},
+      badge,
       title,
       el('span', { class: 'es-count' }, `${n} médicament${n > 1 ? 's' : ''} · ${section.unit}`),
     ),
     el('div', { class: 'edit-head' },
       field('Section', textInput(section.title, (v) => { section.title = v; title.textContent = v || 'Sans titre'; }), 'grow'),
       field('Unité', select(UNITS.map((u) => [u, u]), section.unit, (v) => { section.unit = v; save(); render(); })),
+      field('Icône', select(iconChoices, section.icon || '', (v) => { section.icon = v; badge.replaceChildren(...[iconNode(v)].filter(Boolean)); })),
     ),
     section.items.map((item) => editRow(section, item)),
     el('div', { class: 'edit-foot' },

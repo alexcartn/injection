@@ -6,10 +6,12 @@
 //   note    texte libre (optionnel)
 //   species 'CN' (chien), 'CT' (chat), ou absent pour les deux
 //   group   sous-titre pour regrouper des lignes d'une même section (optionnel)
+// Chaque section a aussi une icône (clé de section-icons.js, vide = aucune).
 
 export const DEFAULT_SECTIONS = [
   {
     title: 'Anesthésie fixe',
+    icon: 'syringe',
     unit: 'mL',
     items: [
       { name: 'Kétamine', min: 0.1, group: 'Kétamine + Xylazine' },
@@ -22,6 +24,7 @@ export const DEFAULT_SECTIONS = [
   },
   {
     title: 'Sédation',
+    icon: 'moon',
     unit: 'mL',
     items: [
       { name: 'Torbugésic', min: 0.02, route: 'IM', species: 'CT' },
@@ -34,6 +37,7 @@ export const DEFAULT_SECTIONS = [
   },
   {
     title: 'Anesthésie gazeuse',
+    icon: 'wind',
     unit: 'mL',
     items: [
       { name: 'Diazépam', min: 0.1, route: 'IV' },
@@ -42,11 +46,13 @@ export const DEFAULT_SECTIONS = [
   },
   {
     title: 'Antibiothérapie',
+    icon: 'pill',
     unit: 'mL',
     items: [{ name: 'Shotapen', min: 0.1, route: 'SC' }],
   },
   {
     title: 'AINS',
+    icon: 'flame',
     unit: 'mL',
     items: [
       { name: 'Metacam', min: 0.04, route: 'SC', species: 'CN' },
@@ -56,6 +62,7 @@ export const DEFAULT_SECTIONS = [
   },
   {
     title: 'Analgésie',
+    icon: 'zap-off',
     unit: 'mL',
     items: [
       { name: 'Insistor', min: 0.05, max: 0.1, route: 'SC, IM, IV', note: 'Effet 4h', species: 'CN' },
@@ -71,6 +78,7 @@ export const DEFAULT_SECTIONS = [
   },
   {
     title: 'Fluidothérapie',
+    icon: 'iv-bag',
     unit: 'mL/h',
     items: [
       { name: 'Perfusion d’entretien', min: 2, route: 'IV' },

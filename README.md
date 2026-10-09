@@ -33,6 +33,8 @@ Signature discrète de la clinique (Natura'Vet, vétérinaire à Mourmelon-le-Gr
 
 Direction « instrument de précision » : dose en grand, pointillés guides du nom vers la valeur, voie d'administration encadrée, unités toujours en casse d'origine. Le contexte de design est décrit dans `.impeccable.md`.
 
+Pictogrammes de section au trait (seringue, lune, souffle, gélule, flamme, éclair barré, poche de perfusion), à gauche du titre et dans la barre du bas. Tracés tirés de Lucide (https://lucide.dev, licence ISC, texte dans `icons/LICENSE-lucide.txt`). L'icône de chaque section se choisit, ou se retire, dans « Modifier ».
+
 Polices hébergées dans `fonts/` (donc disponibles hors connexion), sous licence SIL OFL 1.1 :
 Atkinson Hyperlegible Next (interface) et Barlow Condensed (chiffres et petites capitales). Les textes de licence sont à côté des fichiers.
 
