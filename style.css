@@ -1416,6 +1416,26 @@ body[data-view="rx"] > .prefs { display: none; }
 .rx-gtin-code { user-select: all; }
 .rx-packs .rx-gtin { display: block; margin: 0; }
 
+/* articles équivalents de l'article proposé : repliés */
+.rx-same { margin-top: var(--s-1); }
+.rx-same > summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  color: var(--accent);
+  font-size: var(--t-xs);
+  font-weight: 650;
+  cursor: pointer;
+}
+.rx-same ul { margin: 0; padding: 0; list-style: none; }
+.rx-same li {
+  display: grid;
+  gap: 2px;
+  padding: var(--s-2) 0;
+  border-top: 1px solid var(--rule);
+}
+.rx-same li .rx-gtin { margin: 0; }
+
 /* « Mes dosages » : replié quand la substance suffit */
 .rx-stock { display: grid; gap: var(--s-3); }
 .rx-stock > summary {

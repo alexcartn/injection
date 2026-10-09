@@ -6,13 +6,16 @@
 //   perDay (prises par jour), note, link, formats[] (dosages saisis à la main : « mon stock »),
 //   substance (libellé Med'Vet : l'appli cherche alors parmi tous les articles de la substance),
 //   brand (marque : restreint la recherche à cette marque, absente = toutes)
-// Un dosage en stock (format) :
+// Un dosage ou article (format) :
 //   name, mg (par comprimé), perBlister (comprimés par plaquette), blisters (plaquettes par boîte),
 //   split ('none' | 'half' | 'quarter' : plus petit morceau possible), price (la boîte, facultatif), unit ('cp' | 'gél.'),
 //   gtin (code de la boîte, facultatif ; plusieurs codes séparés par des virgules)
+// Un liquide oral a unit 'mL' : conc (mg/mL), volume (mL d'un flacon), bottles (flacons par boîte).
 
 export const MAX_PER_INTAKE = 6; // au-delà, on ne propose plus ce dosage : trop de comprimés à donner d'un coup
-export const DEFAULT_PREFS = { tol: 0.1, split: 'half', dispense: 'blister', rank: 'waste', source: 'medvet' };
+export const MAX_ML_PER_INTAKE = 30; // volume maximal par prise d'un liquide
+export const SYRINGES = [0.01, 0.05, 0.1]; // graduation de la seringue, en mL
+export const DEFAULT_PREFS = { tol: 0.1, split: 'half', dispense: 'blister', rank: 'waste', source: 'medvet', syringe: 0.05 };
 export const TOLERANCES = [0.05, 0.1, 0.15, 0.2];
 export const SPLITS = ['none', 'half', 'quarter'];
 export const DISPENSES = ['box', 'blister', 'unit'];
@@ -24,12 +27,13 @@ const SPLIT_RANK = { none: 0, half: 1, quarter: 2 };
 const EPS = 1e-9;
 
 export const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
+export const isLiquid = (format) => format.unit === 'mL';
 
 // --- calcul -------------------------------------------------------------------------
 
 // Dose cible par prise, en mg (fourchette si min et max sont renseignés).
 export function target(drug, weight) {
-  const perIntake = (kg) => (drug.basis === 'day' ? kg / drug.perDay : kg) * weight;
+  const perIntake = (kg) => Number(((drug.basis === 'day' ? kg / drug.perDay : kg) * weight).toPrecision(12));
   const lo = perIntake(drug.min);
   const hi = isNum(drug.max) && drug.max > drug.min ? perIntake(drug.max) : lo;
   return { lo, hi, mid: (lo + hi) / 2, ranged: hi > lo };
@@ -58,7 +62,7 @@ function bestTablets(format, t, prefs) {
   let nearest = null;
   for (let q = step * 4; q <= MAX_PER_INTAKE * 4; q += step * 4) {
     const tablets = q / 4;
-    const dose = tablets * format.mg;
+    const dose = Number((tablets * format.mg).toPrecision(12)); // sans le bruit de calcul (0,8 x 1,5 = 1,2000000000000002)
     const gap = Math.abs(dose - t.mid);
     if (dose >= floor - EPS * t.lo && dose <= ceiling + EPS * ceiling && (!inside || gap < inside.gap - EPS)) {
       inside = { tablets, q, dose, gap };
@@ -67,6 +71,58 @@ function bestTablets(format, t, prefs) {
   }
   const pick = inside ?? nearest;
   return { ...pick, ok: Boolean(inside) };
+}
+
+// Le meilleur volume par prise d'un liquide, à la graduation de la seringue : même règle que pour les comprimés.
+function bestVolume(format, t, prefs) {
+  const step = prefs.syringe > 0 ? prefs.syringe : DEFAULT_PREFS.syringe;
+  const floor = t.lo * (1 - prefs.tol);
+  const ceiling = t.ranged ? t.hi : t.lo * (1 + prefs.tol);
+  const maxN = Math.floor(MAX_ML_PER_INTAKE / step + EPS);
+  const around = Math.round(t.mid / format.conc / step);
+  let inside = null;
+  let nearest = null;
+  for (let n = Math.min(Math.max(1, around - 2), maxN); n <= Math.min(around + 2, maxN); n++) {
+    const amount = Number((n * step).toFixed(6));
+    const dose = Number((amount * format.conc).toPrecision(12));
+    const gap = Math.abs(dose - t.mid);
+    if (dose >= floor - EPS * t.lo && dose <= ceiling + EPS * ceiling && (!inside || gap < inside.gap - EPS)) {
+      inside = { amount, dose, gap };
+    }
+    if (!nearest || gap < nearest.gap - EPS) nearest = { amount, dose, gap };
+  }
+  const pick = inside ?? nearest;
+  return { ...pick, tablets: null, q: pick.amount, ok: Boolean(inside) };
+}
+
+// Ce qu'il faut remettre d'un liquide : des flacons (ou des boîtes de flacons), jamais un volume au détail.
+function liquidSupplyFor(format, amount, perDay, days, prefs) {
+  const total = Number((amount * perDay * days).toFixed(6));
+  const bottle = format.volume;
+  if (!(bottle > 0)) return { kind: 'liquid', total, packs: null };
+  const bottles = format.bottles > 0 ? format.bottles : 1;
+  const perBox = bottle * bottles;
+  const box = prefs.dispense === 'box';
+  const count = Math.ceil(total / (box ? perBox : bottle) - EPS);
+  const remitted = count * (box ? perBox : bottle);
+  const leftover = Number((remitted - total).toFixed(6));
+  let cost = null;
+  if (isNum(format.price) && format.price >= 0) cost = box ? count * format.price : (count * format.price) / bottles;
+  return {
+    kind: 'liquid',
+    total,
+    unit: box ? 'box' : 'bottle',
+    count,
+    remitted,
+    bottle,
+    bottles,
+    perBox,
+    leftover,
+    leftoverMg: leftover * format.conc,
+    extraDays: Math.floor(leftover / (amount * perDay) + EPS),
+    cost,
+    packs: true,
+  };
 }
 
 // Ce qu'il faut remettre pour couvrir `days` jours avec ce nombre de comprimés par prise.
@@ -120,7 +176,7 @@ function supplyFor(format, q, perDay, days, prefs) {
 
 const ready = (drug) => isNum(drug.min) && drug.min > 0
   && Number.isInteger(drug.perDay) && drug.perDay >= 1;
-const usable = (format) => isNum(format.mg) && format.mg > 0;
+const usable = (format) => (isLiquid(format) ? isNum(format.conc) && format.conc > 0 : isNum(format.mg) && format.mg > 0);
 
 // Ordre de préférence entre deux propositions qui respectent la tolérance.
 function compare(a, b, prefs) {
@@ -142,6 +198,33 @@ function compare(a, b, prefs) {
   return 0;
 }
 
+// Articles de marques différentes au même dosage, même forme, même conditionnement et même résultat : on n'en
+// garde qu'un dans la liste (le premier dans l'ordre), les autres sont rangés dans `same`. Seuls les articles
+// Med'Vet (qui ont une marque) sont regroupés.
+function groupEquivalents(list) {
+  const groups = new Map();
+  const signature = (o) => {
+    const f = o.format;
+    const liquid = isLiquid(f);
+    return [
+      liquid ? 'liquide' : f.form ?? '',
+      f.species ?? '',
+      liquid ? f.conc : f.mg,
+      liquid ? o.amount : o.tablets,
+      liquid ? f.volume : f.perBlister,
+      o.supply?.packs ? `${o.supply.count}/${o.supply.leftover}` : '',
+    ].join('|');
+  };
+  for (const o of list) {
+    if (!o.format.brand) { groups.set(Symbol('seul'), o); continue; }
+    const key = signature(o);
+    const first = groups.get(key);
+    if (first) (first.same ??= []).push(o);
+    else groups.set(key, o);
+  }
+  return [...groups.values()];
+}
+
 /**
  * Plan complet pour un médicament.
  * ctx : { weight, days, prefs }. days peut être null : on ne calcule alors que la dose par prise.
@@ -159,6 +242,17 @@ export function plan(drug, ctx) {
   const t = target(drug, ctx.weight);
   const days = Number.isInteger(ctx.days) && ctx.days > 0 ? ctx.days : null;
   const options = formats.map((format) => {
+    if (isLiquid(format)) {
+      const volume = bestVolume(format, t, prefs);
+      return {
+        format,
+        ...volume,
+        whole: true,
+        perKg: volume.dose / ctx.weight,
+        dev: deviation(volume.dose, t),
+        supply: days ? liquidSupplyFor(format, volume.amount, drug.perDay, days, prefs) : null,
+      };
+    }
     const pick = bestTablets(format, t, prefs);
     return {
       format,
@@ -170,8 +264,8 @@ export function plan(drug, ctx) {
     };
   });
 
-  const inside = options.filter((o) => o.ok).sort((a, b) => compare(a, b, prefs));
-  const outside = options.filter((o) => !o.ok).sort((a, b) => Math.abs(a.dev) - Math.abs(b.dev));
+  const inside = groupEquivalents(options.filter((o) => o.ok).sort((a, b) => compare(a, b, prefs)));
+  const outside = groupEquivalents(options.filter((o) => !o.ok).sort((a, b) => Math.abs(a.dev) - Math.abs(b.dev)));
   return { status: 'ok', target: t, options: [...inside, ...outside], skipped };
 }
 
@@ -208,7 +302,10 @@ export function normalizeFormat(raw = {}) {
     blisters: optInt(raw.blisters) ?? 1,
     split: SPLITS.includes(raw.split) ? raw.split : 'none',
     price: isNum(raw.price) && raw.price >= 0 ? raw.price : undefined,
-    unit: raw.unit === 'gél.' ? 'gél.' : 'cp',
+    unit: raw.unit === 'gél.' ? 'gél.' : raw.unit === 'mL' ? 'mL' : 'cp',
+    conc: isNum(raw.conc) && raw.conc > 0 ? raw.conc : undefined,
+    volume: isNum(raw.volume) && raw.volume > 0 ? raw.volume : undefined,
+    bottles: optInt(raw.bottles) ?? undefined,
     gtin: typeof raw.gtin === 'string' && /^\d{8,14}(,\d{8,14})*$/.test(raw.gtin) ? raw.gtin : undefined,
   };
 }
@@ -236,6 +333,7 @@ export function normalizePrefs(raw = {}) {
     dispense: DISPENSES.includes(raw.dispense) ? raw.dispense : DEFAULT_PREFS.dispense,
     rank: RANKS.includes(raw.rank) ? raw.rank : DEFAULT_PREFS.rank,
     source: SOURCES.includes(raw.source) ? raw.source : DEFAULT_PREFS.source,
+    syringe: SYRINGES.includes(raw.syringe) ? raw.syringe : DEFAULT_PREFS.syringe,
   };
 }
 
@@ -251,8 +349,29 @@ const prepare = (text) => fold(text).replace(/,/g, '.');
 export const gtinShown = (code) => (code.length === 14 && code.startsWith('0') ? code.slice(1) : code);
 export const gtinCodes = (codes) => (codes ? codes.split(',').filter(Boolean).map(gtinShown) : []);
 
-// Produits qui contiennent tous les mots cherchés (dans la marque, le nom ou le principe actif).
-// Ceux dont la marque commence par le premier mot passent devant.
+// Distance d'édition (insertion, suppression, remplacement, échange de deux lettres voisines).
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+// Un mot cherché est « proche » d'un mot du produit à une faute de frappe près (deux pour les mots longs).
+const near = (word, token) => {
+  if (word.length < 4 || Math.abs(word.length - token.length) > 3) return false;
+  const allowed = word.length >= 8 ? 2 : 1;
+  return Math.min(editDistance(word, token), editDistance(word, token.slice(0, word.length))) <= allowed;
+};
+
+// Produits qui contiennent tous les mots cherchés (dans la marque, le nom, le principe actif ou un GTIN).
+// Ceux dont la marque commence par le premier mot passent devant. Sans aucun résultat, on essaie à une faute
+// de frappe près (« meloxodyl » trouve Meloxidyl) : le tableau renvoyé porte alors approx = true.
 export function searchIndex(products, query, limit = 30) {
   const words = prepare(query).split(/[^a-z0-9.]+/).filter(Boolean);
   if (!words.length) return [];
@@ -262,7 +381,17 @@ export function searchIndex(products, query, limit = 30) {
     if (words.every((w) => product.h.includes(w))) hits.push(product);
   }
   const first = (p) => (prepare(p.b).startsWith(words[0]) ? 0 : 1);
-  return hits.sort((a, b) => first(a) - first(b)).slice(0, limit);
+  if (hits.length) return hits.sort((a, b) => first(a) - first(b)).slice(0, limit);
+
+  const close = [];
+  for (const product of products) {
+    product.tokens ??= [...new Set(product.h.split(/[^a-z0-9.]+/).filter(Boolean))];
+    // les mots avec un chiffre (dosage, GTIN) doivent rester exacts
+    if (words.every((w) => (/\d/.test(w) ? product.h.includes(w) : product.h.includes(w) || product.tokens.some((t) => near(w, t))))) close.push(product);
+  }
+  const result = close.slice(0, limit);
+  result.approx = result.length > 0;
+  return result;
 }
 
 const mgText = (n) => String(n).replace('.', ',');
@@ -279,7 +408,7 @@ export const substanceKey = (label) => label.split('+').map((part) => fold(strip
 
 // { key, label } d'un produit, ou null s'il n'a pas de dosage exploitable pour une posologie en mg/kg.
 export function substanceOf(product) {
-  if (product.m == null) return null;
+  if ((product.m ?? product.c) == null) return null;
   const names = product.a.map((a) => stripNote(a[0]));
   if (names.some((n) => !n)) return null;
   if (names.length === 1) return { key: substanceKey(names[0]), label: labelCase(names[0]) };
@@ -317,6 +446,14 @@ export function brandsOf(products, label) {
 }
 
 export function formatPackText(format) {
+  if (isLiquid(format)) {
+    const ml = `${String(format.volume ?? '?').replace('.', ',')} mL`;
+    if (format.boxes?.length > 1) {
+      const list = format.boxes.map((b) => b.blisters);
+      return `flacons de ${ml} (boîtes de ${list.slice(0, -1).join(', ')} ou ${list.at(-1)} flacons)`;
+    }
+    return format.bottles > 1 ? `${format.bottles} flacons de ${ml}` : `flacon de ${ml}`;
+  }
   if (!format.perBlister) return 'conditionnement inconnu';
   const what = format.unit === 'gél.' ? 'gélule' : 'comprimé';
   const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
@@ -345,7 +482,8 @@ export function marketFormats(products, label, { species, brand, dispense = 'bli
       const known = out.get(key);
       if (known) {
         if (!known.boxes.some((b) => b.blisters === pack[0])) known.boxes = [...known.boxes, { blisters: pack[0], gtin: pack[3] || undefined }].sort((a, b) => a.blisters - b.blisters);
-        if (pack[0] < known.blisters) known.blisters = pack[0]; // la plus petite boîte sert au calcul
+        // la plus petite boîte sert au calcul
+        if (isLiquid(known)) { if (pack[0] < known.bottles) known.bottles = pack[0]; } else if (pack[0] < known.blisters) known.blisters = pack[0];
         continue;
       }
       out.set(key, {
@@ -370,6 +508,7 @@ export function productName(product) {
     const dose = product.d.match(ASSOCIATION_DOSE)?.[0];
     return dose ? `${product.b} ${dose.replace(/\s*mg/gi, ' mg').replace(/\s+/g, ' ')}` : product.d;
   }
+  if (product.u === 'mL') return product.c != null ? `${product.b} ${mgText(product.c)} mg/mL` : product.d;
   return product.m != null ? `${product.b} ${mgText(product.m)} mg` : product.d;
 }
 
@@ -377,12 +516,16 @@ export function productName(product) {
 export function packText(pack, unit = 'cp') {
   const [blisters, per, text] = pack;
   if (!blisters) return text || 'Conditionnement à saisir';
+  if (unit === 'mL') return `${blisters > 1 ? `${blisters} flacons de` : 'flacon de'} ${String(per).replace('.', ',')} mL`;
   const what = unit === 'gél.' ? 'gélule' : 'comprimé';
   const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
   return blisters === 1 ? `${plural(per, what)}` : `${plural(blisters, 'plaquette')} de ${per}`;
 }
 
 export function formatFromProduct(product, pack) {
+  if (product.u === 'mL') {
+    return normalizeFormat({ name: productName(product), unit: 'mL', conc: product.c, volume: pack[1], bottles: pack[0] ?? 1, gtin: pack[3] || undefined });
+  }
   return normalizeFormat({
     name: productName(product),
     mg: product.m,

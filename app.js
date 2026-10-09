@@ -4,7 +4,7 @@ import { ANIMALS } from './animals.js';
 import {
   plan, tabletText, tabletSpeech, searchIndex, packText, productName, formatFromProduct, drugFromProduct,
   normalizeDrug, normalizeFormat, normalizePrefs, fold, TOLERANCES, MAX_PER_INTAKE,
-  substanceOf, listSubstances, brandsOf, marketFormats, formatPackText, gtinCodes,
+  substanceOf, listSubstances, brandsOf, marketFormats, formatPackText, gtinCodes, isLiquid, SYRINGES,
 } from './rx.js';
 
 const STORE_KEY = 'injection:sections:v1';
@@ -787,8 +787,12 @@ const eur = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' 
 
 const countText = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
 const signedPercent = (dev) => `${dev < 0 ? '−' : '+'}${Math.round(Math.abs(dev) * 100)} %`;
-const formatLabel = (drug, f) => f.name || (drug.name && isNum(f.mg) ? `${drug.name} ${fmtMg.format(f.mg)} mg` : 'Sans nom');
+const formatLabel = (drug, f) => f.name || (drug.name && isNum(f.mg) ? `${drug.name} ${fmtMg.format(f.mg)} mg` : drug.name && isNum(f.conc) ? `${drug.name} ${fmtMg.format(f.conc)} mg/mL` : 'Sans nom');
 const cpWord = (format) => (format.unit === 'gél.' ? 'gélule' : 'comprimé');
+const fmtMl = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
+// quantité de « ce qu'on donne » : 1½ cp, ou 0,8 mL
+const amountText = (o) => (isLiquid(o.format) ? fmtMl.format(o.amount) : tabletText(o.tablets));
+const unitText = (format) => (isLiquid(format) ? 'mL' : format.unit);
 
 let rxBuilt = false;
 let rxListEl;
@@ -802,7 +806,7 @@ let rxData = null; // index Med'Vet chargé
 let rxIndexFailed = false;
 let syncRxDays = null;
 
-// L'index Med'Vet (comprimés et gélules pour chien et chat) ne se charge qu'à la première recherche.
+// L'index Med'Vet (formes orales pour chien et chat) : chargé une fois, mis en cache par le service worker.
 function loadRxIndex() {
   rxIndexPromise ??= fetch('medvet-oral.json')
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error('index indisponible'))))
@@ -855,7 +859,7 @@ function gtinNode(f) {
   const items = boxes.flatMap((b) => gtinCodes(b.gtin).map((code) => ({ b, code })));
   if (!items.length) return null;
   return el('p', { class: 'rx-gtin' }, items.map(({ b, code }) => el('span', {},
-    multi ? `${countText(b.blisters, 'plaquette')} : ` : '',
+    multi ? `${countText(b.blisters, isLiquid(f) ? 'flacon' : 'plaquette')} : ` : '',
     el('span', { class: 'rx-gtin-code' }, `GTIN ${code}`),
   )));
 }
@@ -863,7 +867,7 @@ function gtinNode(f) {
 // Sous le nom de l'article : forme, conditionnement, espèces, et lien vers sa fiche Med'Vet.
 function articleLine(f) {
   const species = f.species?.split(',').map((c) => SPECIES_LABEL[c]).join(' et ');
-  const bits = [f.form?.toLowerCase(), formatPackText(f), species, f.assoc && `association : ${fmtMg.format(f.mg)} mg par ${cpWord(f)}`].filter(Boolean);
+  const bits = [f.form?.toLowerCase(), isLiquid(f) && `${fmtMg.format(f.conc)} mg/mL`, formatPackText(f), species, f.assoc && `association : ${fmtMg.format(f.mg)} mg par ${cpWord(f)}`].filter(Boolean);
   return el('p', { class: 'rx-article' },
     el('span', {}, bits.join(' · ')),
     f.link && el('a', { class: 'rx-link', href: f.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
@@ -883,7 +887,20 @@ function supplyLines(o, days) {
   if (!s) {
     bits.push('Choisissez la durée du traitement.');
   } else if (!s.packs) {
-    bits.push(`${tabletText(s.totalQuarters / 4)} ${o.format.unit} à donner`, 'conditionnement non renseigné');
+    bits.push(isLiquid(o.format) ? `${fmtMl.format(s.total)} mL à donner` : `${tabletText(s.totalQuarters / 4)} ${o.format.unit} à donner`, 'conditionnement non renseigné');
+  } else if (s.kind === 'liquid') {
+    big = String(s.count);
+    if (s.unit === 'box') {
+      unit = s.count > 1 ? 'boîtes' : 'boîte';
+      bits.push(s.bottles > 1 ? `${s.bottles} flacons de ${fmtMl.format(s.bottle)} mL` : `un flacon de ${fmtMl.format(s.bottle)} mL`);
+    } else {
+      unit = s.count > 1 ? 'flacons' : 'flacon';
+      bits.push(`de ${fmtMl.format(s.bottle)} mL`);
+    }
+    bits.push(`${fmtMl.format(s.total)} mL à donner`);
+    bits.push(s.leftover > 0 ? `reste ${fmtMl.format(s.leftover)} mL (${fmtMg.format(s.leftoverMg)} mg)` : 'aucun reste');
+    if (s.extraDays > 0) bits.push(`le reste couvre ${countText(s.extraDays, 'jour')} de plus`);
+    if (s.cost !== null) bits.push(`≈ ${eur.format(s.cost)}`);
   } else {
     big = String(s.count);
     if (s.unit === 'box') {
@@ -918,13 +935,14 @@ function intakeLine(o, target) {
     el('span', { class: 'name' }, 'Par prise'),
     el('span', { class: 'leader', 'aria-hidden': 'true' }),
     el('div', { class: 'dose' },
-      el('span', { 'aria-hidden': 'true' }, tabletText(o.tablets)),
-      el('span', { class: 'dose-unit', 'aria-hidden': 'true' }, o.format.unit),
-      el('span', { class: 'sr-only' }, tabletSpeech(o.tablets, cpWord(o.format))),
+      el('span', { 'aria-hidden': 'true' }, amountText(o)),
+      el('span', { class: 'dose-unit', 'aria-hidden': 'true' }, unitText(o.format)),
+      el('span', { class: 'sr-only' }, isLiquid(o.format) ? `${fmtMl.format(o.amount)} millilitres` : tabletSpeech(o.tablets, cpWord(o.format))),
     ),
     el('div', { class: 'sub' },
       el('span', { class: 'calc rx-bits' },
         el('span', { class: 'extra' }, `${fmtMg.format(o.dose)} mg`),
+        isLiquid(o.format) && el('span', { class: 'extra' }, `${fmtMg.format(o.format.conc)} mg/mL`),
         el('span', { class: 'extra' }, `${fmtMg.format(o.perKg)} mg/kg`),
         el('span', { class: 'coef' }, `cible ${range} mg`),
         Math.abs(dev) > 1e-9 && el('span', { class: o.ok ? 'rnote' : 'rnote rnote-warn' }, `écart ${signedPercent(dev)}`),
@@ -935,10 +953,13 @@ function intakeLine(o, target) {
 
 function altRow(drug, o, days, market) {
   const s = o.supply;
-  const parts = [`${tabletText(o.tablets)} ${o.format.unit} par prise`];
+  const liquid = isLiquid(o.format);
+  const parts = [`${amountText(o)} ${unitText(o.format)} par prise`];
   if (s?.packs) {
-    const what = s.unit === 'box' ? countText(s.count, 'boîte') : s.unit === 'blister' ? countText(s.count, 'plaquette') : `${s.count} ${o.format.unit}`;
-    parts.push(what, s.leftover > 0 ? `reste ${tabletText(s.leftover)} ${o.format.unit} (${fmtMg.format(s.leftoverMg)} mg)` : 'aucun reste');
+    const what = s.unit === 'box' ? countText(s.count, 'boîte') : s.unit === 'blister' ? countText(s.count, 'plaquette')
+      : s.unit === 'bottle' ? countText(s.count, 'flacon') : `${s.count} ${o.format.unit}`;
+    const rest = liquid ? `${fmtMl.format(s.leftover)} mL` : `${tabletText(s.leftover)} ${o.format.unit}`;
+    parts.push(what, s.leftover > 0 ? `reste ${rest} (${fmtMg.format(s.leftoverMg)} mg)` : 'aucun reste');
     if (s.cost !== null) parts.push(`≈ ${eur.format(s.cost)}`);
   } else if (s && days) {
     parts.push('conditionnement non renseigné');
@@ -948,8 +969,22 @@ function altRow(drug, o, days, market) {
     market && el('span', { class: 'rx-alt-text' }, [o.format.form?.toLowerCase(), formatPackText(o.format)].filter(Boolean).join(' · ')),
     el('span', { class: 'rx-alt-text' }, parts.join(' · ')),
     market && gtinNode(o.format),
+    market && o.same?.length && el('span', { class: 'rx-alt-text' }, `Équivalents : ${o.same.map((x) => x.format.brand).join(', ')}`),
     !o.ok && el('span', { class: 'rnote rnote-warn' }, `hors tolérance ${signedPercent(o.dev)}`),
     market && o.format.link && el('a', { class: 'rx-link', href: o.format.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
+  );
+}
+
+// Les articles équivalents (autres marques, même dosage et même conditionnement) de l'article proposé.
+function equivalentsNode(o) {
+  if (!o.same?.length) return null;
+  return el('details', { class: 'rx-same' },
+    el('summary', {}, `${countText(o.same.length, 'équivalent')} : ${o.same.map((x) => x.format.brand).join(', ')}`),
+    el('ul', {}, o.same.map((x) => el('li', {},
+      el('span', { class: 'name' }, x.format.name),
+      gtinNode(x.format),
+      x.format.link && el('a', { class: 'rx-link', href: x.format.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
+    ))),
   );
 }
 
@@ -990,6 +1025,7 @@ function rxResult(drug, openEditor) {
     ),
     c.market && articleLine(best.format),
     c.market && gtinNode(best.format),
+    c.market && equivalentsNode(best),
     intakeLine(best, r.target),
     supplyLines(best, days),
   );
@@ -1058,12 +1094,21 @@ function rxCard(drug) {
 // --- édition d'un médicament -----------------------------------------------------------------
 
 function fmtEditor(drug, f, rerender, commit) {
+  const liquid = isLiquid(f);
   return el('div', { class: 'rx-fmt' },
     field('Nom du dosage', textInput(f.name, (v) => { f.name = v; }, commit), 'wide'),
-    field('Dosage (mg par comprimé)', numInput(f.mg, (v) => { f.mg = v; }, true, commit)),
-    field('Se coupe en', select(SPLIT_CHOICES, f.split, (v) => { f.split = v; }, commit)),
-    field('Comprimés par plaquette', numInput(f.perBlister, (v) => { f.perBlister = Number.isInteger(v) && v > 0 ? v : null; }, false, commit)),
-    field('Plaquettes par boîte', numInput(f.blisters, (v) => { f.blisters = Number.isInteger(v) && v > 0 ? v : 1; }, false, commit)),
+    liquid
+      ? [
+        field('Concentration (mg/mL)', numInput(f.conc, (v) => { f.conc = v > 0 ? v : undefined; }, true, commit)),
+        field('Volume d’un flacon (mL)', numInput(f.volume, (v) => { f.volume = v > 0 ? v : undefined; }, false, commit)),
+        field('Flacons par boîte', numInput(f.bottles, (v) => { f.bottles = Number.isInteger(v) && v > 0 ? v : 1; }, false, commit)),
+      ]
+      : [
+        field('Dosage (mg par comprimé)', numInput(f.mg, (v) => { f.mg = v; }, true, commit)),
+        field('Se coupe en', select(SPLIT_CHOICES, f.split, (v) => { f.split = v; }, commit)),
+        field('Comprimés par plaquette', numInput(f.perBlister, (v) => { f.perBlister = Number.isInteger(v) && v > 0 ? v : null; }, false, commit)),
+        field('Plaquettes par boîte', numInput(f.blisters, (v) => { f.blisters = Number.isInteger(v) && v > 0 ? v : 1; }, false, commit)),
+      ],
     field('Prix de la boîte (€, facultatif)', numInput(f.price, (v) => { f.price = v ?? undefined; }, false, commit)),
     field('GTIN (facultatif)', textInput(gtinCodes(f.gtin).join(', '), (v) => {
       const codes = v.split(/[\s,;]+/).filter(Boolean);
@@ -1089,7 +1134,7 @@ function buildRxEditor(drug, host, refresh, close) {
   const searchHost = el('div', { class: 'rx-search-host', hidden: true });
   let search;
   const addFound = (product, pack) => {
-    const exists = drug.formats.some((f) => f.name === productName(product) && f.perBlister === pack[1] && f.blisters === (pack[0] ?? 1));
+    const exists = drug.formats.some((f) => sameFormat(f, product, pack));
     if (!exists) drug.formats.push(formatFromProduct(product, pack));
     if (!drug.link && product.l) drug.link = drugFromProduct(product, pack).link;
     commit();
@@ -1200,21 +1245,24 @@ function rxSearch(onPick) {
     const query = input.value.trim();
     if (query.length < 2) {
       hits.replaceChildren();
-      status.textContent = message || `Base Med’Vet du ${data.date} : comprimés et gélules pour chien et chat. Posologies non incluses.`;
+      status.textContent = message || `Base Med’Vet du ${data.date} : formes orales pour chien et chat (comprimés, gélules, liquides). Posologies non incluses.`;
       return;
     }
     const found = searchIndex(data.p, query, 15);
-    status.textContent = message || (found.length ? `${countText(found.length, 'produit')}${found.length === 15 ? ' (affinez la recherche)' : ''}` : 'Aucun résultat : ajoutez-le à la main.');
+    const count = `${countText(found.length, 'produit')}${found.length === 15 ? ' (affinez la recherche)' : ''}`;
+    status.textContent = message || (found.approx ? `Aucun résultat exact : ${count} proche${found.length > 1 ? 's' : ''} de « ${query} »` : found.length ? count : 'Aucun résultat : ajoutez-le à la main.');
     message = '';
     hits.replaceChildren(...found.map((product) => hit(product)));
   };
 
   const hit = (product) => {
-    const actives = product.a.map((a) => `${a[0].replace(/\s*\(.*\)/, '').toLowerCase()}${a[1] != null ? ` ${String(a[1]).replace('.', ',')} ${a[2]}` : ''}`).join(' + ');
+    const actives = product.u === 'mL'
+      ? `${product.a[0][0].replace(/\s*\(.*\)/, '').toLowerCase()} ${String(product.c).replace('.', ',')} mg/mL`
+      : product.a.map((a) => `${a[0].replace(/\s*\(.*\)/, '').toLowerCase()}${a[1] != null ? ` ${String(a[1]).replace('.', ',')} ${a[2]}` : ''}`).join(' + ');
     const species = product.s.split(',').map((c) => SPECIES_LABEL[c]).join(', ');
     return el('div', { class: 'rx-hit' },
       el('p', { class: 'rx-hit-name' }, productName(product), el('span', { class: 'rx-hit-meta' }, `${actives} · ${species}`)),
-      product.m == null && el('p', { class: 'rx-hint' }, 'Dosage par comprimé à saisir après l’ajout.'),
+      (product.m ?? product.c) == null && el('p', { class: 'rx-hint' }, 'Dosage par comprimé à saisir après l’ajout.'),
       el('ul', { class: 'rx-packs' }, product.k.map((pack) => el('li', {},
         el('div', {},
           el('span', {}, packText(pack, product.u)),
@@ -1235,13 +1283,19 @@ function rxSearch(onPick) {
 
 // --- ajout d'un médicament au catalogue ---------------------------------------------------------
 
+// Le dosage (ou article) saisi correspond-il à ce conditionnement du produit ?
+function sameFormat(f, product, pack) {
+  if (f.name !== productName(product)) return false;
+  return product.u === 'mL' ? f.volume === pack[1] && f.bottles === pack[0] : f.perBlister === pack[1] && f.blisters === (pack[0] ?? 1);
+}
+
 function addDrugFromProduct(product, pack) {
   const substance = substanceOf(product);
   const brand = fold(product.b);
   const existing = state.rx.drugs.find((d) => (substance ? d.substance === substance.label : fold(d.name) === brand));
   if (existing) {
     const f = formatFromProduct(product, pack);
-    const exists = existing.formats.some((g) => g.name === f.name && g.perBlister === f.perBlister && g.blisters === f.blisters);
+    const exists = existing.formats.some((g) => sameFormat(g, product, pack));
     if (!exists && !substance) existing.formats.push(f);
     saveRx();
     showRxCard(existing);
@@ -1290,7 +1344,7 @@ function rxPrefField(label, key, options, format) {
 }
 
 let rxPrefsNow;
-const DISPENSE_LABEL = { box: 'boîte entière', blister: 'plaquette entière', unit: 'à l’unité' };
+const DISPENSE_LABEL = { box: 'boîte entière', blister: 'plaquette ou flacon entier', unit: 'à l’unité' };
 function syncRxPrefs() {
   const p = state.rx.prefs;
   rxPrefsNow.textContent = `±${Math.round(p.tol * 100)} % · ${DISPENSE_LABEL[p.dispense]}`;
@@ -1330,10 +1384,11 @@ function buildRx() {
         rxPrefField('Articles proposés', 'source', [['medvet', 'Tout Med’Vet'], ['stock', 'Mon stock (dosages saisis)']]),
         rxPrefField('Tolérance sur la dose', 'tol', TOLERANCES.map((t) => [t, `±${Math.round(t * 100)} %`]), Number),
         rxPrefField('Découpe maximale', 'split', [['none', 'Comprimés entiers'], ['half', 'Moitiés'], ['quarter', 'Quarts']]),
-        rxPrefField('Remise au client', 'dispense', [['box', 'Boîte entière'], ['blister', 'Plaquette entière'], ['unit', 'Comprimés à l’unité']]),
+        rxPrefField('Seringue (liquides)', 'syringe', SYRINGES.map((v) => [v, `graduée à ${fmtMl.format(v)} mL`]), Number),
+        rxPrefField('Remise au client', 'dispense', [['box', 'Boîte entière'], ['blister', 'Plaquette ou flacon entier'], ['unit', 'Comprimés à l’unité (flacon entier pour un liquide)']]),
         rxPrefField('Classement des dosages', 'rank', [['waste', 'Moins de reste'], ['cost', 'Moins cher'], ['pills', 'Moins de comprimés'], ['exact', 'Dose la plus juste']]),
       ),
-      el('p', { class: 'prefs-note' }, `La tolérance est l’écart accepté avec la dose cible (une dose max n’est jamais dépassée). Un comprimé non sécable n’est jamais coupé. Au plus ${MAX_PER_INTAKE} comprimés par prise. « Moins cher » demande le prix de la boîte, saisi sur un dosage de « Mon stock » : sur les articles Med’Vet, il revient à « moins de reste ».`),
+      el('p', { class: 'prefs-note' }, `La tolérance est l’écart accepté avec la dose cible (une dose max n’est jamais dépassée). Un comprimé non sécable n’est jamais coupé. Au plus ${MAX_PER_INTAKE} comprimés par prise. Les liquides se donnent à la graduation de la seringue choisie, en flacons entiers. « Moins cher » demande le prix de la boîte, saisi sur un dosage de « Mon stock » : sur les articles Med’Vet, il revient à « moins de reste ».`),
     ),
   );
   syncRxPrefs();
