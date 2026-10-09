@@ -6,7 +6,9 @@
 //   note    texte libre (optionnel)
 //   species 'CN' (chien), 'CT' (chat), ou absent pour les deux
 //   group   sous-titre pour regrouper des lignes d'une même section (optionnel)
-// Chaque section a aussi une icône (clé de section-icons.js, vide = aucune).
+// Chaque section a aussi une icône (clé de section-icons.js, vide = aucune) et, en option,
+// decimals : nombre maximal de décimales affichées pour les volumes (2 par défaut).
+// La sédation est à 3 : dans le Sheet ces cellules ne sont pas arrondies (0,518 et non 0,52).
 
 export const DEFAULT_SECTIONS = [
   {
@@ -25,6 +27,7 @@ export const DEFAULT_SECTIONS = [
   {
     title: 'Sédation',
     icon: 'moon',
+    decimals: 3,
     unit: 'mL',
     items: [
       { name: 'Torbugésic', min: 0.02, route: 'IM', species: 'CT' },

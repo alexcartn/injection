@@ -14,6 +14,24 @@ const DRIP_SETS = [20, 60];
 const ROUND_TOLERANCE = 0.1;
 
 const fmtDose = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const doseFormats = {};
+// Volumes affichés sur 2 décimales au moins, et jusqu'à section.decimals (3 pour la sédation).
+function doseFormat(section) {
+  const digits = section.decimals === 3 || section.decimals === 4 ? section.decimals : 2;
+  const format = (doseFormats[digits] ??= new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: digits }));
+  return { format, digits };
+}
+
+// Arrondi comme dans le Sheet : sur les 15 chiffres significatifs, une demi-unité va toujours vers le haut.
+// (Sans cela, 0,165 s'affichait 0,16 : en binaire il vaut un peu moins que 0,165.)
+function roundHalfUp(value, digits) {
+  const text = Math.abs(value).toPrecision(15);
+  if (text.includes('e')) return value;
+  const [whole, fraction = ''] = text.split('.');
+  const padded = fraction.padEnd(digits + 1, '0');
+  const n = BigInt(whole + padded.slice(0, digits)) + (Number(padded[digits]) >= 5 ? 1n : 0n);
+  return (Math.sign(value) * Number(n)) / 10 ** digits;
+}
 const fmtDose1 = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const fmtMg = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
 const fmtDripLow = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
@@ -55,13 +73,15 @@ function storeDelete(key) {
   try { localStorage.removeItem(key); } catch { /* stockage indisponible */ }
 }
 
-// Données enregistrées avant l'arrivée des icônes : on rend l'icône d'origine aux sections
-// d'origine. Une icône volontairement retirée est enregistrée vide, donc jamais écrasée.
-function withIcons(sections) {
+// Données enregistrées avant l'arrivée des icônes et de la précision d'affichage : on rend leurs
+// valeurs d'origine aux sections d'origine. Un réglage volontairement changé est enregistré,
+// donc jamais écrasé (icône retirée = chaîne vide).
+function withDefaults(sections) {
   for (const section of sections) {
-    if ('icon' in section) continue;
     const original = DEFAULT_SECTIONS.find((d) => d.title === section.title);
-    if (original?.icon) section.icon = original.icon;
+    if (!original) continue;
+    if (!('icon' in section) && original.icon) section.icon = original.icon;
+    if (!('decimals' in section) && original.decimals) section.decimals = original.decimals;
   }
   return sections;
 }
@@ -71,7 +91,7 @@ function loadSections() {
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.every((s) => s && Array.isArray(s.items))) return withIcons(parsed);
+      if (Array.isArray(parsed) && parsed.every((s) => s && Array.isArray(s.items))) return withDefaults(parsed);
     } catch { /* données corrompues : on repart des valeurs d'origine */ }
   }
   return structuredClone(DEFAULT_SECTIONS);
@@ -148,11 +168,12 @@ function iconNode(name) {
 
 const coefUnit = (unit) => (unit === 'mL/h' ? 'mL/kg/h' : 'mL/kg');
 
-const joinRange = (values, format) => values.map((v) => format.format(v)).join(' – ');
+const joinRange = (values, format, digits) => values.map((v) => format.format(digits == null ? v : roundHalfUp(v, digits))).join(' – ');
 
 // Arrondit un volume à la graduation de la seringue, sauf si l'écart dépasse la tolérance.
 function roundDose(value, step) {
-  const rounded = Number((Math.round(value / step) * step).toFixed(3));
+  // toPrecision(12) : enlève le bruit de calcul (2,4999999999999996 doit valoir 2,5)
+  const rounded = Number((Math.round(Number((value / step).toPrecision(12))) * step).toFixed(3));
   if (rounded <= 0 || Math.abs(rounded - value) / value > ROUND_TOLERANCE) return { value, skipped: true };
   return { value: rounded, skipped: false };
 }
@@ -173,9 +194,13 @@ function compute(item, section) {
     else if (shown.some((v, i) => Math.abs(v - exact[i]) > 1e-9)) status = 'rounded';
   }
 
-  const format = step === 0.1 && status !== 'skipped' ? fmtDose1 : fmtDose;
-  const dose = joinRange(shown, format);
-  const exactText = joinRange(exact, fmtDose);
+  // arrondi demandé : on affiche à la graduation choisie ; sinon (ou si l'arrondi est refusé) la valeur exacte
+  const exactFmt = doseFormat(section);
+  const shownFmt = step && status !== 'skipped'
+    ? { format: step === 0.1 ? fmtDose1 : fmtDose, digits: step === 0.1 ? 1 : 2 }
+    : exactFmt;
+  const dose = joinRange(shown, shownFmt.format, shownFmt.digits);
+  const exactText = joinRange(exact, exactFmt.format, exactFmt.digits);
   // Rien à signaler si le chiffre affiché est identique au chiffre calculé.
   if (status === 'rounded' && dose === exactText) status = 'exact';
   const hasConc = isNum(item.conc) && item.conc > 0;
@@ -421,6 +446,11 @@ function editCard(section) {
       field('Section', textInput(section.title, (v) => { section.title = v; title.textContent = v || 'Sans titre'; }), 'grow'),
       field('Unité', select(UNITS.map((u) => [u, u]), section.unit, (v) => { section.unit = v; save(); render(); })),
       field('Icône', select(iconChoices, section.icon || '', (v) => { section.icon = v; badge.replaceChildren(...[iconNode(v)].filter(Boolean)); })),
+      field('Précision', select(
+        [['2', '2 décimales'], ['3', 'Jusqu’à 3 décimales']],
+        String(section.decimals === 3 ? 3 : 2),
+        (v) => { section.decimals = Number(v); },
+      )),
     ),
     section.items.map((item) => editRow(section, item)),
     el('div', { class: 'edit-foot' },
