@@ -1,7 +1,7 @@
 # Natura'Vet : injections et perf hospit
 
 PWA de calcul des doses d'injection et de perfusion à partir du poids de l'animal.
-Reprend le Google Sheet "Injections et perf hospit" : dose (mL) = poids (kg) x coefficient (mL/kg).
+Reprend le Google Sheet "Injections et perf hospit" et ses onglets de chirurgie ambulatoire : dose (mL) = poids (kg) x coefficient (mL/kg).
 
 Fichiers statiques uniquement (HTML, CSS, JS), aucun build, aucune dépendance.
 
@@ -9,6 +9,7 @@ Fichiers statiques uniquement (HTML, CSS, JS), aucun build, aucune dépendance.
 
 - Saisir le poids (virgule ou point). Les doses se calculent à chaque frappe.
 - Filtre Tous / Chien / Chat pour masquer les lignes de l'autre espèce.
+- Modèle Hospit / Ambulatoire, sous la barre du poids (le choix est mémorisé). Hospit : l'onglet « Injections et perf hospit ». Ambulatoire : les onglets de chirurgie ambulatoire, avec Sedator à la place de Dormilan, Trymox à la place de Shotapen, Comfortan à la place d'Insistor et sans bloc Sédation. Les coefficients sont les mêmes. Le changement de modèle garde le poids, le nom et les notes, et vide les cases « prélevé ». Chaque modèle a ses propres modifications, et « Rétablir les doses d'origine » ne remet à zéro que le modèle affiché. Le sélecteur est masqué pendant « Modifier » (un rappel indique le modèle en cours de modification).
 - Téléphone : la barre en bas liste les sections. Un toucher y saute, la section en cours est soulignée. Elle s'efface pendant la saisie du poids et en mode paysage. Seule la barre poids + espèce reste collée en haut.
 - Grand écran : marque, poids, espèce et actions tiennent sur une seule ligne collée en haut, les sections s'affichent en colonnes.
 - Le poids n'est jamais mémorisé : il faut le ressaisir à chaque ouverture, pour ne pas réutiliser par erreur le poids du patient précédent.
@@ -17,7 +18,7 @@ Fichiers statiques uniquement (HTML, CSS, JS), aucun build, aucune dépendance.
 - Arrondi à la seringue (Aucun, 0,01, 0,05 ou 0,1 mL), dans « Réglages » sous le poids, mémorisé sur l'appareil. Il ne s'applique qu'aux volumes en mL, pas aux débits de perfusion. Si l'arrondi change la dose de plus de 10 % (ou la ramènerait à zéro), la valeur exacte est conservée et signalée. Quand une dose est arrondie, la valeur calculée reste affichée.
 - Perfusion : choix du set (20 ou 60 gouttes/mL) dans la section Fluidothérapie, la ligne affiche le débit en gouttes par minute en plus des mL/h.
 - Dose en mg : à renseigner par médicament (concentration en mg/mL, dans "Modifier"). Les mg sont calculés sur le volume affiché, donc sur le volume arrondi si l'arrondi est actif. Sans concentration, rien n'est affiché. Aucune concentration n'est préremplie.
-- Fiche d'hospitalisation : dans « Fiche et réglages », saisir le nom de l'animal (facultatif, sinon une ligne à remplir à la main) et des notes (imprimées dans le cadre « Notes et observations », au-dessus de lignes vides pour écrire encore à la main), choisir les sections à imprimer et la présence du cadre de notes (mémorisé), puis « Imprimer la fiche ». Elle sort en A4, noir et blanc quel que soit le thème, avec le nom, l'espèce, le poids, la date, des cases vides à cocher à la main et la signature de la clinique. Elle suit le filtre Chien / Chat / Tous et l'arrondi en cours. « Enregistrer au format PDF » dans la fenêtre d'impression en fait un PDF dont le nom contient le nom de l'animal, le poids et la date. Le nom et les notes ne sont jamais mémorisés et s'effacent avec le poids. Pour tenir sur une page, retirer les sections d'anesthésie : antibiotique, AINS, analgésie, perfusion et notes tiennent sur une page.
+- Fiche d'hospitalisation : dans « Fiche et réglages », saisir le nom de l'animal (facultatif, sinon une ligne à remplir à la main) et des notes (imprimées dans le cadre « Notes et observations », au-dessus de lignes vides pour écrire encore à la main), choisir les sections à imprimer (mémorisées séparément pour chaque modèle) et la présence du cadre de notes (mémorisé), puis « Imprimer la fiche ». La fiche est la même quel que soit le modèle : seules les lignes de médicaments changent. Elle sort en A4, noir et blanc quel que soit le thème, avec le nom, l'espèce, le poids, la date, des cases vides à cocher à la main et la signature de la clinique. Elle suit le filtre Chien / Chat / Tous et l'arrondi en cours. « Enregistrer au format PDF » dans la fenêtre d'impression en fait un PDF dont le nom contient le nom de l'animal, le poids et la date. Le nom et les notes ne sont jamais mémorisés et s'effacent avec le poids. Pour tenir sur une page, retirer les sections d'anesthésie : antibiotique, AINS, analgésie, perfusion et notes tiennent sur une page.
 - Précision d'affichage alignée sur le Sheet d'origine : 2 décimales, sauf la sédation qui en affiche jusqu'à 3 (les cellules du Sheet n'y sont pas arrondies : 0,518 mL à 25,9 kg, 0,043 mL à 4,3 kg). Réglable par section dans « Modifier » (« Précision »). L'arrondi suit celui d'Excel : une demi-unité exacte va vers le haut (5,5 kg d'Insistor chat = 0,165 s'affiche 0,17).
 - Un avertissement s'affiche au-delà de 100 kg (faute de frappe probable).
 - Thème clair par défaut, quel que soit le réglage du téléphone. Le bouton lune/soleil en haut bascule en mode sombre (choix mémorisé sur l'appareil).
@@ -26,7 +27,7 @@ Fichiers statiques uniquement (HTML, CSS, JS), aucun build, aucune dépendance.
 
 Bouton "Modifier" : coefficient (et dose max pour une fourchette), nom, voie, espèce, concentration, groupe, note. On peut ajouter ou supprimer des médicaments et des sections. Chaque section est un accordéon replié par défaut : on n'ouvre que celle à modifier.
 Les modifications sont enregistrées dans le navigateur de l'appareil (elles ne sont pas partagées entre appareils).
-"Rétablir les doses d'origine" revient aux valeurs de `data.js`.
+"Rétablir les doses d'origine" revient aux valeurs de `data.js` pour le modèle affiché (Hospit ou Ambulatoire) : l'autre n'est pas touché.
 
 ## Design
 
@@ -54,7 +55,7 @@ python3 -m http.server 8000
 
 ## Mettre en ligne (GitHub Pages)
 
-Settings > Pages > Deploy from a branch > `main` / `/ (root)`.
+Settings > Pages > Deploy from a branch > `master` / `/ (root)`.
 Les chemins sont relatifs : l'appli fonctionne dans un sous-dossier (`https://<user>.github.io/injection/`).
 
 Sur téléphone : ouvrir l'adresse dans Chrome (Android) puis "Installer l'application", ou dans Safari (iPhone) puis Partager > "Sur l'écran d'accueil".

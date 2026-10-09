@@ -341,6 +341,33 @@ h1 {
 }
 .warn[hidden] { display: none; }
 
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--gutter-r) 0 var(--gutter-l);
+}
+.model-label {
+  font: 600 var(--t-xs) / 1.2 var(--font-num);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.seg-model {
+  flex: 1 1 auto;
+  max-width: 22rem;
+}
+.seg-model span { min-height: 44px; }
+
+.edit-note {
+  max-width: 720px;
+  margin: var(--s-4) auto 0;
+  padding: 0 max(var(--s-4), env(safe-area-inset-left));
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+}
+.edit-note[hidden] { display: none; }
+
 .hint {
   margin: var(--s-4) 0 calc(var(--s-2) * -1);
   padding: 0 var(--gutter-r) 0 var(--gutter-l);
@@ -794,6 +821,7 @@ main {
 body.editing .bar,
 body.editing .hint,
 body.editing .prefs,
+body.editing .model-row,
 body.editing .dock { display: none; }
 
 /* en édition, c'est la ligne marque (bouton Terminé) qui reste visible */
@@ -1138,7 +1166,7 @@ body:has(#weight:focus) .dock { display: none; }
   }
 
   /* tout ce qui sert à l'écran disparaît */
-  .chrome, .hint, .prefs, .dock, .set, .clear, footer, .warn { display: none !important; }
+  .chrome, .hint, .prefs, .dock, .set, .clear, footer, .warn, .model-row, .edit-note { display: none !important; }
   .print-off { display: none !important; }
 
   /* en-tête de la fiche */
