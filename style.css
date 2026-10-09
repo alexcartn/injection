@@ -330,6 +330,46 @@ h1 {
 }
 .hint[hidden] { display: none; }
 
+.prefs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  margin: var(--s-4) 0 calc(var(--s-2) * -1);
+  padding: 0 var(--gutter-r) 0 var(--gutter-l);
+}
+.prefs label,
+.set label {
+  font: 600 var(--t-sm) / 1.2 var(--font-num);
+  letter-spacing: 0.04em;
+}
+.prefs-note {
+  flex-basis: 100%;
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+  max-width: 65ch;
+}
+.prefs-note[hidden] { display: none; }
+
+.pick {
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border: 2px solid var(--rule-strong);
+  border-radius: var(--r);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+.pick:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.set {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  padding: var(--s-2) 0 var(--s-1);
+}
+
 /* --- fiche de doses : sections ouvertes, sans cartes -------------------- */
 
 main {
@@ -383,12 +423,69 @@ main {
 /* une ligne : nom ..... dose, puis voie / note / coefficient */
 .row {
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(var(--s-4), 1fr) auto;
+  grid-template-columns: auto minmax(0, max-content) minmax(var(--s-4), 1fr) auto;
   align-items: baseline;
   column-gap: var(--s-2);
   padding: var(--s-2) 0;
 }
 .group + .row { padding-top: var(--s-3); }
+
+/* case "prélevé" : zone tactile de 44 px, case de 24 px */
+.tick {
+  position: relative;
+  align-self: start;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  /* colonne de 24 px = la case ; la zone tactile déborde sans agrandir la ligne ;
+     centre calé sur la ligne du chiffre (31 px de haut) */
+  margin: -6px -10px -12px -10px;
+  cursor: pointer;
+}
+.tick input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.tick input:disabled { cursor: default; }
+.box {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--rule-strong);
+  border-radius: 4px;
+  background: var(--paper);
+}
+.tick input:disabled + .box { opacity: 0.35; }
+.tick input:checked + .box {
+  border-color: var(--ink);
+  background: var(--ink);
+}
+.tick input:checked + .box::after {
+  content: "";
+  display: block;
+  width: 6px;
+  height: 12px;
+  margin: 1px auto 0;
+  border: solid var(--paper);
+  border-width: 0 3px 3px 0;
+  transform: rotate(45deg);
+}
+.tick input:focus-visible + .box {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ligne prélevée : on l'estompe sans la rendre illisible */
+.row.is-done .name,
+.row.is-done .dose,
+.row.is-done .sub { opacity: 0.5; }
+.row.is-done .name { text-decoration: line-through; text-decoration-thickness: 1.5px; }
 
 .name {
   font-weight: 650;
@@ -434,7 +531,7 @@ main {
 }
 
 .sub {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -451,12 +548,23 @@ main {
   font: 600 var(--t-sm) / 1.25 var(--font-num);
   letter-spacing: 0.08em;
 }
-.coef {
+.calc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--s-1) var(--s-3);
   margin-left: auto;
+}
+.extra,
+.coef {
   font: 600 var(--t-sm) / 1.2 var(--font-num);
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
 }
+.extra { color: var(--ink); }
+.rnote { font-size: var(--t-xs); }
+.rnote-warn { color: var(--warn-ink); background: var(--warn-bg); padding: 0 var(--s-2); border-radius: 3px; }
 
 .empty {
   padding: var(--s-5) 0;
@@ -509,7 +617,8 @@ main {
 /* --- mode édition ------------------------------------------------------- */
 
 body.editing .bar,
-body.editing .hint { display: none; }
+body.editing .hint,
+body.editing .prefs { display: none; }
 
 /* en édition, c'est l'en-tête (bouton Terminé) qui reste visible */
 body.editing .top {

@@ -1,6 +1,6 @@
 // Service worker : l'appli fonctionne hors connexion.
 // Incrémenter CACHE à chaque déploiement pour forcer la mise à jour des fichiers.
-const CACHE = 'injection-v3';
+const CACHE = 'injection-v4';
 const ASSETS = [
   './',
   'index.html',

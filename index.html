@@ -79,6 +79,17 @@
 
   <p id="hint" class="hint">Saisissez le poids de l'animal : toutes les doses se calculent.</p>
 
+  <div class="prefs" id="prefs">
+    <label for="round">Arrondi à la seringue</label>
+    <select id="round" class="pick">
+      <option value="0">Aucun</option>
+      <option value="0.01">0,01 mL</option>
+      <option value="0.05">0,05 mL</option>
+      <option value="0.1">0,1 mL</option>
+    </select>
+    <span id="round-note" class="prefs-note" hidden>Si l'arrondi change la dose de plus de 10 %, la valeur exacte est conservée.</span>
+  </div>
+
   <main id="main"></main>
 
   <footer id="foot">

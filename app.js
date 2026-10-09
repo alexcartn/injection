@@ -5,8 +5,17 @@ const SPECIES_KEY = 'injection:species';
 const SPECIES_LABEL = { CN: 'Chien', CT: 'Chat' };
 const UNITS = ['mL', 'mL/h'];
 const WEIGHT_WARN_ABOVE = 100;
+const PREFS_KEY = 'injection:prefs';
+const ROUND_STEPS = [0, 0.01, 0.05, 0.1];
+const DRIP_SETS = [20, 60];
+// Un arrondi qui change la dose de plus de 10 % est refusé : la valeur exacte est gardée.
+const ROUND_TOLERANCE = 0.1;
 
 const fmtDose = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtDose1 = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fmtMg = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
+const fmtDripLow = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
+const fmtDripHigh = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 });
 const fmtCoef = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 4 });
 const fmtWeight = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
 
@@ -18,6 +27,8 @@ const weightInput = document.getElementById('weight');
 const weightClear = document.getElementById('weight-clear');
 const warn = document.getElementById('warn');
 const hint = document.getElementById('hint');
+const roundSelect = document.getElementById('round');
+const roundNote = document.getElementById('round-note');
 const editToggle = document.getElementById('edit-toggle');
 const themeToggle = document.getElementById('theme-toggle');
 
@@ -49,14 +60,28 @@ function loadSpecies() {
   return saved === 'CN' || saved === 'CT' ? saved : 'all';
 }
 
+// Réglages de l'appareil : arrondi à la seringue (mL) et type de set de perfusion (gouttes/mL).
+function loadPrefs() {
+  const prefs = { round: 0, set: 20 };
+  try {
+    const saved = JSON.parse(storeGet(PREFS_KEY) || '{}');
+    if (ROUND_STEPS.includes(saved.round)) prefs.round = saved.round;
+    if (DRIP_SETS.includes(saved.set)) prefs.set = saved.set;
+  } catch { /* réglages corrompus : valeurs par défaut */ }
+  return prefs;
+}
+
 const state = {
   sections: loadSections(),
   species: loadSpecies(),
+  prefs: loadPrefs(),
   weight: null,
   editing: false,
+  done: new Set(), // médicaments cochés "prélevés" ; vidé à chaque nouveau poids
 };
 
 const save = () => storeSet(STORE_KEY, JSON.stringify(state.sections));
+const savePrefs = () => storeSet(PREFS_KEY, JSON.stringify(state.prefs));
 
 // --- utilitaires ------------------------------------------------------------
 
@@ -83,10 +108,46 @@ function el(tag, attrs = {}, ...children) {
 
 const coefUnit = (unit) => (unit === 'mL/h' ? 'mL/kg/h' : 'mL/kg');
 
-function doseText(item) {
+const joinRange = (values, format) => values.map((v) => format.format(v)).join(' – ');
+
+// Arrondit un volume à la graduation de la seringue, sauf si l'écart dépasse la tolérance.
+function roundDose(value, step) {
+  const rounded = Number((Math.round(value / step) * step).toFixed(3));
+  if (rounded <= 0 || Math.abs(rounded - value) / value > ROUND_TOLERANCE) return { value, skipped: true };
+  return { value: rounded, skipped: false };
+}
+
+// Tout ce qu'il faut afficher pour une ligne, ou null tant que le poids ou la dose manque.
+// "shown" est le volume à prélever (arrondi si demandé) ; mg et gouttes en découlent.
+function compute(item, section) {
   if (!state.weight || !isNum(item.min)) return null;
-  const low = fmtDose.format(state.weight * item.min);
-  return isNum(item.max) ? `${low} – ${fmtDose.format(state.weight * item.max)}` : low;
+  const exact = [item.min, ...(isNum(item.max) ? [item.max] : [])].map((c) => state.weight * c);
+
+  let shown = exact;
+  let status = 'exact';
+  const step = section.unit === 'mL' ? state.prefs.round : 0;
+  if (step) {
+    const results = exact.map((v) => roundDose(v, step));
+    shown = results.map((r) => r.value);
+    if (results.some((r) => r.skipped)) status = 'skipped';
+    else if (shown.some((v, i) => Math.abs(v - exact[i]) > 1e-9)) status = 'rounded';
+  }
+
+  const format = step === 0.1 && status !== 'skipped' ? fmtDose1 : fmtDose;
+  const dose = joinRange(shown, format);
+  const exactText = joinRange(exact, fmtDose);
+  // Rien à signaler si le chiffre affiché est identique au chiffre calculé.
+  if (status === 'rounded' && dose === exactText) status = 'exact';
+  const hasConc = isNum(item.conc) && item.conc > 0;
+  return {
+    dose,
+    exact: exactText,
+    status,
+    mg: hasConc && section.unit === 'mL' ? joinRange(shown.map((v) => v * item.conc), fmtMg) : null,
+    drip: section.unit === 'mL/h'
+      ? shown.map((v) => { const d = (v * state.prefs.set) / 60; return (d < 10 ? fmtDripLow : fmtDripHigh).format(d); }).join(' – ')
+      : null,
+  };
 }
 
 function coefText(item, unit) {
@@ -110,11 +171,25 @@ function renderView() {
     cards.push(
       el('section', { class: 'card' },
         el('h2', {}, el('span', {}, section.title), el('span', { class: 'unit' }, section.unit)),
+        section.unit === 'mL/h' && dripPicker(),
         el('div', { class: 'rows' }, rowsFor(items, section)),
       ),
     );
   }
   main.replaceChildren(...(cards.length ? cards : [el('p', { class: 'empty' }, 'Aucun médicament à afficher.')]));
+}
+
+// Type de set de perfusion : sert à convertir les mL/h en gouttes par minute.
+function dripPicker() {
+  const picker = el('select', { id: 'set', class: 'pick' },
+    DRIP_SETS.map((n) => el('option', { value: n, selected: n === state.prefs.set }, `${n} gouttes/mL`)));
+  picker.addEventListener('change', () => {
+    state.prefs.set = Number(picker.value);
+    savePrefs();
+    renderView();
+    document.getElementById('set')?.focus();
+  });
+  return el('div', { class: 'set' }, el('label', { for: 'set' }, 'Set de perfusion'), picker);
 }
 
 function rowsFor(items, section) {
@@ -131,28 +206,45 @@ function rowsFor(items, section) {
   return out;
 }
 
-// Une ligne : nom ..... dose, puis voie / note / coefficient en dessous.
+// Une ligne : [coche] nom ..... dose, puis voie / note et calculs (mg, gouttes, coefficient) en dessous.
 function row(item, section) {
-  const dose = doseText(item);
+  const calc = compute(item, section);
   const chip = SPECIES_LABEL[item.species];
   const coef = coefText(item, section.unit);
-  const doseClass = ['dose', !dose && 'dose-empty', isNum(item.max) && 'dose-range'].filter(Boolean).join(' ');
-  return el('div', { class: 'row' },
+  const done = state.done.has(item);
+  const doseClass = ['dose', !calc && 'dose-empty', isNum(item.max) && 'dose-range'].filter(Boolean).join(' ');
+  const label = `${item.name || 'Sans nom'}${chip ? ` (${chip})` : ''}`;
+
+  const tick = el('input', { type: 'checkbox', checked: done, disabled: !calc, 'aria-label': `Prélevé : ${label}` });
+  const rowEl = el('div', { class: done ? 'row is-done' : 'row' },
+    el('label', { class: 'tick' }, tick, el('span', { class: 'box', 'aria-hidden': 'true' })),
     el('div', { class: 'name' },
       item.name || 'Sans nom',
       chip && el('span', { class: `chip chip-${item.species}` }, chip),
     ),
     el('span', { class: 'leader', 'aria-hidden': 'true' }),
     el('div', { class: doseClass },
-      dose ?? '–',
-      dose && el('span', { class: 'dose-unit' }, section.unit),
+      calc ? calc.dose : '–',
+      calc && el('span', { class: 'dose-unit' }, section.unit),
     ),
-    (item.route || item.note || coef) && el('div', { class: 'sub' },
+    (item.route || item.note || calc?.mg || calc?.drip || coef) && el('div', { class: 'sub' },
       item.route && el('span', { class: 'route' }, item.route),
       item.note && el('span', { class: 'note' }, item.note),
-      coef && el('span', { class: 'coef' }, coef),
+      el('span', { class: 'calc' },
+        calc?.status === 'rounded' && el('span', { class: 'rnote' }, `calculé ${calc.exact}`),
+        calc?.status === 'skipped' && el('span', { class: 'rnote rnote-warn' }, 'non arrondi : écart > 10 %'),
+        calc?.mg && el('span', { class: 'extra' }, `${calc.mg} mg`),
+        calc?.drip && el('span', { class: 'extra' }, `${calc.drip} gouttes/min`),
+        coef && el('span', { class: 'coef' }, coef),
+      ),
     ),
   );
+  tick.addEventListener('change', () => {
+    if (tick.checked) state.done.add(item);
+    else state.done.delete(item);
+    rowEl.classList.toggle('is-done', tick.checked);
+  });
+  return rowEl;
 }
 
 // --- édition des doses ------------------------------------------------------
@@ -217,13 +309,14 @@ function editCard(section, index) {
 }
 
 function editRow(section, item) {
-  const recap = [item.route, SPECIES_LABEL[item.species], item.group].filter(Boolean).join(' · ');
+  const conc = isNum(item.conc) && item.conc > 0 ? `${fmtCoef.format(item.conc)} mg/mL` : '';
+  const recap = [item.route, SPECIES_LABEL[item.species], conc, item.group].filter(Boolean).join(' · ');
   return el('div', { class: 'erow' },
     field('Nom', textInput(item.name, (v) => { item.name = v; }), 'c-name'),
     field(`Dose (${coefUnit(section.unit)})`, numInput(item.min, (v) => { item.min = v; }, true)),
     field('Dose max', numInput(item.max, (v) => { item.max = v ?? undefined; })),
     el('details', { class: 'c-more' },
-      el('summary', {}, 'Voie, espèce, groupe, note', recap && el('span', { class: 'recap' }, recap)),
+      el('summary', {}, 'Voie, espèce, concentration, groupe, note', recap && el('span', { class: 'recap' }, recap)),
       el('div', { class: 'more-grid' },
         field('Voie', textInput(item.route, (v) => { item.route = v; })),
         field('Espèce', select(
@@ -231,7 +324,8 @@ function editRow(section, item) {
           item.species || '',
           (v) => { item.species = v || undefined; },
         )),
-        field('Groupe', textInput(item.group, (v) => { item.group = v; }), 'wide'),
+        field('Concentration (mg/mL)', numInput(item.conc, (v) => { item.conc = v ?? undefined; })),
+        field('Groupe', textInput(item.group, (v) => { item.group = v; })),
         field('Note', textInput(item.note, (v) => { item.note = v; }), 'wide'),
         button('Supprimer ce médicament', () => removeItem(section, item), 'btn-danger btn-small wide'),
       ),
@@ -290,7 +384,9 @@ function setEditing(on) {
 function updateWeight() {
   const text = weightInput.value;
   const weight = parseNum(text);
+  const previous = state.weight;
   state.weight = weight > 0 ? weight : null;
+  if (state.weight !== previous) state.done.clear();
 
   const invalid = text.trim() !== '' && !state.weight;
   weightInput.setAttribute('aria-invalid', String(invalid));
@@ -318,6 +414,20 @@ weightClear.addEventListener('click', () => {
 // Toute la boîte "Poids" est cliquable, pas seulement la zone de saisie.
 document.querySelector('.weight').addEventListener('click', (e) => {
   if (!weightClear.contains(e.target)) weightInput.focus();
+});
+
+// --- arrondi à la seringue ------------------------------------------------------
+
+function syncRoundNote() {
+  roundNote.hidden = !state.prefs.round;
+}
+roundSelect.value = String(state.prefs.round);
+syncRoundNote();
+roundSelect.addEventListener('change', () => {
+  state.prefs.round = Number(roundSelect.value);
+  savePrefs();
+  syncRoundNote();
+  if (!state.editing) renderView();
 });
 
 // --- thème : clair par défaut, sombre au choix (mémorisé) -------------------
