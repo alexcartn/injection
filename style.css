@@ -1436,6 +1436,59 @@ body[data-view="rx"] > .prefs { display: none; }
 }
 .rx-same li .rx-gtin { margin: 0; }
 
+/* posologie proposée par Med'Vet : à vérifier tant qu'elle n'est ni confirmée ni modifiée */
+.rx-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  margin: 0 0 var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r);
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.rx-suggest[hidden],
+.rx-rcp[hidden] { display: none; }
+
+/* texte de la rubrique « Posologie » du RCP : replié, lisible, défilant */
+.rx-rcp { margin-top: var(--s-2); }
+.rx-rcp > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent);
+  font-weight: 650;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.rx-rcp-sp {
+  margin: var(--s-2) 0 var(--s-1);
+  color: var(--ink-2);
+  font: 600 var(--t-xs) / 1.2 var(--font-num);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.rx-rcp-text {
+  max-height: 18rem;
+  overflow: auto;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r);
+  background: var(--paper-2);
+  box-shadow: inset 0 0 0 1px var(--rule);
+  font-size: var(--t-sm);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.rx-rcp-src {
+  margin: var(--s-2) 0 0;
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+}
+
 /* voie d'un médicament (injectable, spot-on) */
 .chip-route {
   background: var(--paper-2);

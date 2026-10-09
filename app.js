@@ -5,6 +5,7 @@ import {
   plan, tabletText, tabletSpeech, searchIndex, packText, productName, formatFromProduct, drugFromProduct,
   normalizeDrug, normalizeFormat, normalizePrefs, fold, TOLERANCES, MAX_PER_INTAKE,
   substanceOf, listSubstances, brandsOf, marketFormats, formatPackText, gtinCodes, isLiquid, isBand, routeOf, planBand, SYRINGES,
+  suggestedPosology, posoKey, rcpTexts,
 } from './rx.js';
 
 const STORE_KEY = 'injection:sections:v1';
@@ -831,6 +832,20 @@ function loadRxIndex() {
   return rxIndexPromise;
 }
 
+// Les textes de la rubrique « Posologie » des fiches : plus lourds que l'index, chargés seulement quand on ouvre
+// un extrait (puis servis par le cache du service worker, hors connexion aussi).
+let rxPosoPromise = null;
+function loadRxPoso() {
+  rxPosoPromise ??= fetch('medvet-poso.json')
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('posologies indisponibles'))))
+    .then((data) => {
+      if (data?.v !== 1 || typeof data.p !== 'object' || !data.p) throw new Error('posologies illisibles');
+      return data;
+    })
+    .catch((error) => { rxPosoPromise = null; throw error; });
+  return rxPosoPromise;
+}
+
 // Charge l'index à l'ouverture de l'onglet, puis redessine les cartes qui l'attendaient.
 let rxIndexRequested = false;
 function ensureRxIndex() {
@@ -1013,7 +1028,7 @@ function equivalentsNode(o) {
 }
 
 // Spot-on : l'article dont la tranche de poids (lue dans le libellé du produit) contient le poids du patient.
-function rxResultBand(drug, c, openEditor) {
+function rxResultBand(drug, c, openEditor, onArticle) {
   const days = state.rx.days;
   if (!drug.substance) return [rxNote('Choisissez la substance du spot-on pour trouver l’article selon le poids.', openEditor, 'Choisir')];
   if (c.failed) return [rxNote('La base Med’Vet n’est pas disponible : un spot-on ne peut pas être choisi sans elle.', openEditor, 'Modifier')];
@@ -1027,6 +1042,7 @@ function rxResultBand(drug, c, openEditor) {
   if (!r.options.length) return [el('p', { class: 'rx-warn', role: 'alert' }, 'Aucun de ces articles n’indique de tranche de poids dans son libellé : choisissez-le sur la fiche Med’Vet.'), unread].filter(Boolean);
 
   const [best, ...others] = r.options;
+  onArticle(best.format);
   const out = [];
   if (!best.ok) {
     out.push(el('p', { class: 'rx-warn', role: 'alert' },
@@ -1088,7 +1104,7 @@ function rxResultBand(drug, c, openEditor) {
   return out.filter(Boolean);
 }
 
-function rxResult(drug, openEditor) {
+function rxResult(drug, openEditor, onArticle = () => {}) {
   const days = state.rx.days;
   const prefs = state.rx.prefs;
   const c = candidatesFor(drug);
@@ -1096,7 +1112,7 @@ function rxResult(drug, openEditor) {
     ensureRxIndex();
     return [el('p', { class: 'rx-hint' }, 'Chargement de la base Med’Vet…')];
   }
-  if (drug.route === 'spot') return rxResultBand(drug, c, openEditor);
+  if (drug.route === 'spot') return rxResultBand(drug, c, openEditor, onArticle);
   const r = plan({ ...drug, formats: c.formats }, { weight: state.weight, days, prefs });
   if (r.status === 'drug') return [rxNote(`Renseignez la dose (mg/kg) et le nombre de ${intakeName(drug)}s par jour.`, openEditor, 'Renseigner')];
   if (r.status === 'formats') {
@@ -1114,6 +1130,7 @@ function rxResult(drug, openEditor) {
   if (r.status === 'weight') return [el('p', { class: 'rx-hint' }, 'Saisissez le poids de l’animal.')];
 
   const [best, ...others] = r.options;
+  onArticle(best.format);
   const out = [];
   if (!best.ok) {
     out.push(el('p', { class: 'rx-warn', role: 'alert' },
@@ -1145,6 +1162,35 @@ function rxResult(drug, openEditor) {
   return out.filter(Boolean);
 }
 
+// --- posologie du RCP, à côté du résultat ---------------------------------------------------------
+
+// La fiche dont on montre la posologie : celle de l'article proposé ; sans article (poids ou dose pas encore
+// saisis), celle du premier article de la substance, ou à défaut la fiche d'où vient le médicament.
+function rcpTarget(drug, article) {
+  const formats = candidatesFor(drug).formats ?? [];
+  const f = article?.link ? article : formats.find((x) => x.link);
+  const link = f?.link ?? drug.link;
+  if (!link) return null;
+  return { link, label: f?.name ?? drug.name, species: state.species !== 'all' ? state.species : drug.species };
+}
+
+function rcpContent(target, entry) {
+  const texts = rcpTexts(entry, target.species);
+  const who = SPECIES_LABEL[target.species]?.toLowerCase();
+  const nodes = texts.length
+    ? texts.map(({ species, text }) => el('div', { class: 'rx-rcp-block' },
+      species && texts.length > 1 && el('h3', { class: 'rx-rcp-sp' }, SPECIES_LABEL[species]),
+      el('div', { class: 'rx-rcp-text', tabindex: '0', role: 'region', 'aria-label': `Posologie du RCP${species ? ` : ${SPECIES_LABEL[species].toLowerCase()}` : ''}` }, text),
+    ))
+    : [el('p', { class: 'rx-hint' }, `La fiche Med’Vet ne donne pas de posologie${who ? ` pour ${who}` : ''}.`)];
+  return [
+    ...nodes,
+    el('p', { class: 'rx-rcp-src' },
+      'Texte de la fiche Med’Vet de ', el('span', {}, target.label), ' : le RCP fait foi. ',
+      el('a', { class: 'rx-link', href: target.link, target: '_blank', rel: 'noopener' }, 'Fiche complète')),
+  ];
+}
+
 // --- une carte par médicament : le résultat se redessine, l'éditeur garde ses champs ------------
 
 function rxCard(drug) {
@@ -1156,12 +1202,47 @@ function rxCard(drug) {
   const routeChip = el('span', { class: 'chip chip-route' });
   const toggle = el('button', { type: 'button', class: 'btn btn-ghost btn-small', 'aria-expanded': 'false' }, 'Modifier');
   const poso = el('p', { class: 'rx-poso' });
+  const suggest = el('div', { class: 'rx-suggest', role: 'status', hidden: true },
+    el('span', {}, 'Posologie proposée d’après la fiche Med’Vet : à vérifier avant de remettre.'),
+    button('Confirmer', () => { drug.suggested = undefined; saveRx(); refresh(); }, 'btn-small'),
+  );
   const result = el('div', { class: 'rx-result' });
+  const rcpSummary = el('summary', {}, 'Posologie du RCP');
+  const rcpBody = el('div', { class: 'rx-rcp-body' });
+  const rcp = el('details', { class: 'rx-rcp', hidden: true }, rcpSummary, rcpBody);
   const editor = el('div', { class: 'rx-editor', hidden: true });
   const root = el('section', { class: 'rx-card' },
     el('div', { class: 'rx-head' }, el('div', { class: 'rx-title' }, title, chip, routeChip), toggle),
-    poso, result, editor,
+    poso, suggest, result, rcp, editor,
   );
+
+  // L'extrait ne se charge qu'à l'ouverture, puis reste ouvert quand le résultat se redessine.
+  let target = null;
+  const fillRcp = () => {
+    if (!rcp.open || !target) return;
+    const key = `${target.link}|${target.species ?? ''}`;
+    if (rcpBody.dataset.key === key) return;
+    rcpBody.dataset.key = key;
+    const mine = target;
+    rcpBody.replaceChildren(el('p', { class: 'rx-hint' }, 'Chargement du texte…'));
+    loadRxPoso()
+      .then((data) => {
+        if (rcpBody.dataset.key !== key) return;
+        rcpBody.replaceChildren(...rcpContent(mine, data.p[posoKey(mine.link)]));
+      })
+      .catch(() => {
+        if (rcpBody.dataset.key !== key) return;
+        rcpBody.dataset.failed = 'true';
+        rcpBody.replaceChildren(
+          el('p', { class: 'rx-warn', role: 'alert' }, 'Le texte n’est pas disponible pour le moment (hors connexion ?).'),
+          el('a', { class: 'rx-link', href: mine.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
+        );
+      });
+  };
+  rcp.addEventListener('toggle', () => {
+    if (rcp.open && rcpBody.dataset.failed) { delete rcpBody.dataset.failed; delete rcpBody.dataset.key; }
+    fillRcp();
+  });
 
   let built = false;
   const refresh = () => {
@@ -1178,7 +1259,15 @@ function rxCard(drug) {
       drug.note && el('span', { class: 'rx-note-text' }, drug.note),
       !market && drug.link && el('a', { class: 'rx-link', href: drug.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
     ].filter(Boolean));
-    result.replaceChildren(...rxResult(drug, () => open(true)));
+    suggest.hidden = !drug.suggested;
+    let article = null;
+    result.replaceChildren(...rxResult(drug, () => open(true), (f) => { article = f; }));
+    target = drug.route === 'spot' && !article ? null : rcpTarget(drug, article);
+    rcp.hidden = !target;
+    if (target) {
+      rcpSummary.textContent = `Posologie du RCP · ${target.label}`;
+      fillRcp();
+    }
   };
   const open = (on) => {
     if (on && !built) { buildRxEditor(drug, editor, refresh, () => open(false)); built = true; }
@@ -1283,12 +1372,12 @@ function buildRxEditor(drug, host, refresh, close) {
     field('Prises par jour', select(
       [['', '–'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']],
       drug.perDay ? String(drug.perDay) : '',
-      (v) => { drug.perDay = v ? Number(v) : null; },
+      (v) => { drug.perDay = v ? Number(v) : null; drug.suggested = undefined; },
       commit,
     )),
-    field('Dose (mg/kg)', numInput(drug.min, (v) => { drug.min = v; }, true, commit)),
-    field('Dose max (mg/kg)', numInput(drug.max, (v) => { drug.max = v ?? undefined; }, false, commit)),
-    field('Dose donnée', select([['intake', 'par prise ou injection'], ['day', 'par jour']], drug.basis, (v) => { drug.basis = v; }, commit), 'wide'),
+    field('Dose (mg/kg)', numInput(drug.min, (v) => { drug.min = v; drug.suggested = undefined; }, true, commit)),
+    field('Dose max (mg/kg)', numInput(drug.max, (v) => { drug.max = v ?? undefined; drug.suggested = undefined; }, false, commit)),
+    field('Dose donnée', select([['intake', 'par prise ou injection'], ['day', 'par jour']], drug.basis, (v) => { drug.basis = v; drug.suggested = undefined; }, commit), 'wide'),
   );
   const help = el('p', { class: 'rx-help' }, 'La dose se lit sur la fiche du médicament. « Par jour » est divisée par le nombre de prises.');
   const intervalFields = el('div', { class: 'rx-form' },
@@ -1324,6 +1413,7 @@ function buildRxEditor(drug, host, refresh, close) {
   };
   const routeSel = select(ROUTE_CHOICES, drug.route, (v) => {
     drug.route = v;
+    drug.suggested = undefined;
     drug.substance = undefined;
     drug.brand = undefined;
     search = undefined;
@@ -1448,21 +1538,28 @@ function addDrugFromProduct(product, pack) {
   const brand = fold(product.b);
   const route = routeOf(product);
   const existing = state.rx.drugs.find((d) => d.route === route && (substance ? d.substance === substance.label : fold(d.name) === brand));
+  const species = state.species !== 'all' ? state.species : undefined;
   if (existing) {
     const f = formatFromProduct(product, pack);
     const exists = existing.formats.some((g) => sameFormat(g, product, pack));
     if (!exists && !substance) existing.formats.push(f);
+    // un médicament encore sans posologie reçoit celle que Med'Vet propose, à vérifier comme les autres
+    const suggestion = route === 'spot' || (isNum(existing.min) && existing.perDay) ? undefined : suggestedPosology(product, existing.species ?? species);
+    if (suggestion) Object.assign(existing, { ...suggestion, species: existing.species ?? suggestion.species, suggested: true });
     saveRx();
     showRxCard(existing);
-    return `« ${existing.name} » est déjà dans le catalogue.`;
+    return suggestion
+      ? `« ${existing.name} » est déjà dans le catalogue : posologie Med’Vet proposée, à vérifier.`
+      : `« ${existing.name} » est déjà dans le catalogue.`;
   }
-  const drug = drugFromProduct(product, pack);
+  const drug = drugFromProduct(product, pack, species);
   state.rx.drugs.push(drug);
   saveRx();
   showRxCard(drug);
-  return route === 'spot'
-    ? `« ${drug.name} » ajouté : l’article se choisit selon le poids.`
-    : `« ${drug.name} » ajouté : renseignez maintenant sa posologie.`;
+  if (route === 'spot') return `« ${drug.name} » ajouté : l’article se choisit selon le poids.`;
+  return drug.suggested
+    ? `« ${drug.name} » ajouté avec la posologie proposée par Med’Vet : à vérifier.`
+    : `« ${drug.name} » ajouté : renseignez maintenant sa posologie (le texte de la fiche est sous le résultat).`;
 }
 
 // Affiche la carte, ouvre son éditeur et la ramène à l'écran.

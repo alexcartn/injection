@@ -3,13 +3,17 @@
 formes orales (comprimés, gélules, liquides buvables), injectables à concentration en mg/mL et spot-on.
 Les autres espèces et les autres formes (vaccins, colliers, aliments...) ne sont pas retenues.
 
-Usage : python3 -I tools/build-medvet-index.py chemin/vers/medicament.xlsx [sortie.json]
+Usage : python3 -I tools/build-medvet-index.py chemin/vers/medicament.xlsx [index.json [posologies.json]]
 
-Ne garde que des faits de catalogue : nom, principes actifs et dosage, espèces, conditionnement,
-caractère sécable et adresse de la fiche. Ni posologie, ni textes de RCP, ni images.
+Écrit aussi medvet-poso.json (texte de la rubrique « Posologie » de chaque fiche, par espèce) et ajoute à l'index,
+pour les rares posologies sans ambiguïté, la dose à proposer à l'avance (champ « o »). Rien d'autre du RCP, pas d'images.
+Ne garde sinon que des faits de catalogue : nom, principes actifs et dosage, espèces, conditionnement,
+caractère sécable et adresse de la fiche.
 """
 import collections
+import html
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -226,6 +230,139 @@ def compact(value):
     return int(value) if isinstance(value, float) and value.is_integer() else value
 
 
+# --- posologie : texte du RCP et préremplissage prudent ---------------------------------------------
+# Le texte de la rubrique « Posologie » est repris tel quel (medvet-poso.json). Une posologie n'est en plus
+# proposée à l'avance (champ « o » de l'index) que si elle est sans ambiguïté : une seule dose en mg/kg
+# (ou une fourchette étroite), un seul rythme quotidien, ni phases, ni conditions, ni autres espèces, et une
+# équivalence du RCP (« 1 comprimé pour 10 kg ») qui confirme la dose. Dans le doute, rien n'est proposé :
+# le texte du RCP reste affiché à côté et le vétérinaire saisit lui-même la posologie.
+PNUM = r'(\d+(?:\.\d+)?)'
+
+
+def poso_text(raw):
+    """Texte brut de la rubrique Posologie : balises retirées, cellules de tableau séparées par « | »."""
+    t = raw or ''
+    t = re.sub(r'</t[dh]>', ' | ', t)
+    t = re.sub(r'<br\s*/?>|</p>|</li>|</tr>|</h\d>|</div>', '\n', t)
+    t = html.unescape(re.sub(r'<[^>]+>', ' ', t)).replace('\xa0', ' ')
+    t = re.sub(r'[ \t]+', ' ', t)
+    t = re.sub(r' *\n *', '\n', t)
+    return re.sub(r'\n{3,}', '\n\n', t).strip()
+
+
+def poso_norm(t):
+    t = fold(t).replace('’', "'").replace('µ', 'u')
+    return re.sub(r'(\d),(\d)', r'\1.\2', t)
+
+
+KG = r'(?:/|\s+par\s+|\s*/\s*)\s*(?:kg|kilo(?:gramme)?s?)\b'
+DOSE = re.compile(PNUM + r'(?:\s*(?:a|-|–|—|et)\s*' + PNUM + r')?\s*mg\s*(?:de\s+|d\')?[^.;:\d|]{0,40}?' + KG)
+ASSOC = re.compile(PNUM + r"\s*mg\s*d'\s*amoxicilline\s*et\s*(?:de\s*)?" + PNUM + r"\s*mg\s*d'\s*acide\s*clavulanique\s*" + KG)
+DAY_AFTER = re.compile(r'^\s*(?:de\s+poids\s+(?:corporel|vif)\s*)?(?:et\s+)?(?:/\s*j(?:our)?\b|par\s+jour|par\s+24\s*h)')
+FREQ = [
+    (re.compile(r'\b(?:une|1)\s*fois\s*(?:par|/|dans\s+la)\s*(?:jour|journee|24\s*h)|\btoutes?\s*les\s*24\s*(?:h|heures)|\btous\s*les\s*jours|\b(?:une|1)\s*(?:seule\s*)?(?:prise|administration|injection|dose)s?\s*(?:unique\s*)?(?:quotidienne|par\s*jour)|\b1\s*x\s*/\s*j'), 1),
+    (re.compile(r'\b(?:deux|2)\s*fois\s*(?:par|/|dans\s+la)\s*(?:jour|journee|24\s*h)|\btoutes?\s*les\s*12\s*(?:h|heures)|\bmatin\s*et\s*soir|\b2\s*x\s*/\s*j|\b(?:deux|2)\s*(?:prises|administrations|injections)\s*(?:quotidiennes|par\s*jour)'), 2),
+    (re.compile(r'\b(?:trois|3)\s*fois\s*(?:par|/|dans\s+la)\s*(?:jour|journee)|\btoutes?\s*les\s*8\s*(?:h|heures)|\b3\s*x\s*/\s*j|\b(?:trois|3)\s*(?:prises|administrations|injections)\s*(?:quotidiennes|par\s*jour)'), 3),
+    (re.compile(r'\b(?:quatre|4)\s*fois\s*(?:par|/|dans\s+la)\s*(?:jour|journee)|\btoutes?\s*les\s*6\s*(?:h|heures)|\b4\s*x\s*/\s*j|\b(?:quatre|4)\s*(?:prises|administrations|injections)\s*(?:quotidiennes|par\s*jour)'), 4),
+]
+SPLIT = re.compile(r'a\s*repartir|reparti|divise|en\s*(?:deux|2|trois|3|quatre|4)\s*(?:prises|fois|administrations|injections)')
+OTHER_UNIT = re.compile(r'(?:u|m)?cg\s*/\s*kg|microgramme|ug\s*/\s*kg|\bui\s*/\s*kg|/\s*m2|surface\s*corporelle')
+POSO_OTHER_SPECIES = re.compile(r'\b(?:bovins?|porcins?|equins?|chevaux|cheval|volailles?|ovins?|caprins?|veaux?|moutons?|lapins?|rongeurs?|furets?|oiseaux|poulets?|dindes?|vaches?|truies?|poneys?|cochons?|reptiles?)\b')
+# tout autre rythme qu'un traitement quotidien
+OTHER_RHYTHM = re.compile(r'tous\s*les\s*(?:\d+|deux|trois)\s*jours|toutes\s*les\s*(?:36|48|72)\s*h|par\s*semaine|hebdomad|par\s*mois|tous\s*les\s*mois|chaque\s*mois|un\s*mois|mensuel|jours?\s*(?:sur|un\s*sur)\s*(?:deux|2)|alterne|\d+\s*(?:a|-)\s*\d+\s*fois|(?:une|1)\s*(?:a|ou|-)\s*(?:deux|2|trois|3)\s*fois|(?:deux|2)\s*(?:a|ou|-)\s*(?:trois|3|quatre|4)\s*fois|toutes\s*les\s*\d+\s*(?:a|-)\s*\d+\s*h|(?:dose|administration|injection)\s*unique|une\s*seule\s*(?:fois|dose|administration|injection)|plus\s*tard|intervalle\s*(?:d\'administration|entre|de\s*(?:dose|dosage|traitement|\d))|etre\s*repet|a\s*repeter|repeter|renouvel')
+# phases d'un schéma, palier, populations particulières
+PHASES = re.compile(r'de\s*charge|d\'entretien|entretien|dose\s*initiale|traitement\s*initial|initialement|phase|premier\s*jour|premiere?\s*(?:dose|administration|injection|prise|semaine)|titrat|palier|ensuite|dans\s*un\s*second\s*temps|\bjour\s*1\b|\bj\s*1\b|semaine\s*\d|toutes\s*les\s*\d+\s*semaines|puis\s+(?:\d|la\s*dose|une\s*dose|reduire|diminuer|passer)')
+# mots qui modulent une dose : seulement dans les phrases qui parlent de dose
+DOSE_WORD = re.compile(r'\bdose|posologie|doubl|(?:/|\bpar)\s*(?:kg|kilo)')
+CONDITION = re.compile(r'\bsi\b|selon|en\s*fonction|suivant|ajust|adapt|augment|reduit|reduire|diminu|gravite|insuffisan|chiots?\b|chatons?\b|jeunes?\b|gestant|allait|\bage\b|senior|obes|apres\s*\d|avant\s*\d|maximal|minimal')
+DOUBLE = re.compile(r'doubl')
+MAY = re.compile(r'\bpeu(?:t|vent)\b|pourr|possible|\bou\b')
+TABLET_EQ = re.compile(r'(\d+(?:\.\d+)?\s*(?:a|-)\s*)?\b(?:un|1|une)\s*(?:comprime|gelule|capsule|cp)s?\b[^.;\d]{0,30}?\bpour\s*' + PNUM + r'\s*kg')
+VOLUME_EQ = re.compile(r'(\d+(?:\.\d+)?\s*(?:a|-)\s*)?(?<![\d.])' + PNUM + r'\s*ml\b[^.;\d]{0,40}?(?:/|pour|par)\s*(?:' + PNUM + r'\s*)?kg')
+
+
+def is_assoc(product):
+    return tuple(sorted(base_name(a[0]) for a in product['a'])) in ASSOCIATIONS
+
+
+def sentences(t):
+    return [s for s in re.split(r'(?<=[.;:])\s+|\n+', t) if s.strip()]
+
+
+def suggest(text, product):
+    """([dose min, dose max ou None, prises par jour, base 'intake' | 'day'], 'ok') ou (None, motif du refus)."""
+    t = poso_norm(text)
+    assoc = is_assoc(product)
+    if len(product['a']) != 1 and not assoc: return None, 'plusieurs substances'
+    if OTHER_UNIT.search(t): return None, 'autre unité'
+    if POSO_OTHER_SPECIES.search(t): return None, 'autres espèces'
+    if OTHER_RHYTHM.search(t): return None, 'rythme'
+    if PHASES.search(t): return None, 'phases'
+    for s in sentences(t):
+        if DOSE_WORD.search(s) and CONDITION.search(s): return None, 'condition dans une phrase de dose'
+
+    # chaque dose : (min, max|None, position de fin, phrase qui la contient)
+    spans = []
+    pos = 0
+    for s in sentences(t):
+        i = t.find(s, pos)
+        spans.append((i, i + len(s), s))
+        pos = i + len(s)
+    sentence_at = lambda i: next((sp[2] for sp in spans if sp[0] <= i < sp[1]), '')
+    doses = []
+    if assoc:
+        # dose de l'association = somme des deux substances, comme sur la boîte
+        for m in ASSOC.finditer(t):
+            doses.append((number(m.group(1)) + number(m.group(2)), None, m.end(), sentence_at(m.start())))
+        totals = {round(d[0], 6) for d in doses}
+        for m in DOSE.finditer(ASSOC.sub(lambda x: ' ' * len(x.group(0)), t)):
+            v = number(m.group(1))   # « soit 12,5 mg de principes actifs combinés par kg » : le même total, ou le total par jour
+            if m.group(2) is None and (any(abs(v - x) < 1e-9 for x in totals) or (any(abs(v - 2 * x) < 1e-9 for x in totals) and DAY_AFTER.search(t[m.end():m.end() + 60]))): continue
+            return None, 'dose hors paire'
+    else:
+        for m in DOSE.finditer(t):
+            doses.append((number(m.group(1)), number(m.group(2)) if m.group(2) else None, m.end(), sentence_at(m.start())))
+    if not doses: return None, 'pas de dose mg/kg'
+    first = doses[0]
+
+    freqs = {n for rx, n in FREQ if rx.search(t)}
+    if len(freqs) != 1: return None, 'fréquence'
+    n = next(iter(freqs))
+    day = bool(DAY_AFTER.search(t[first[2]:first[2] + 60]))
+    basis = 'intake'
+    if day and n > 1:
+        # dose par jour : seule une répartition imposée par le RCP donne le nombre de prises (« peut être répartie » laisse le choix)
+        split = [s for s in sentences(t) if SPLIT.search(s)]
+        if not split or any(MAY.search(s) for s in split): return None, 'dose par jour sans répartition imposée'
+        basis = 'day'
+
+    for d in doses[1:]:
+        if (d[0], d[1]) == (first[0], first[1]): continue
+        if first[1] is None and d[1] is None:
+            if DOUBLE.search(d[3]) and abs(d[0] - 2 * first[0]) < 1e-9: continue   # « la dose peut être doublée à ... »
+            if abs(d[0] - first[0] * n) < 1e-9 and DAY_AFTER.search(t[d[2]:d[2] + 60]): continue  # le total par jour, répété
+            if basis == 'day' and abs(d[0] * n - first[0]) < 1e-9: continue  # la dose par prise, répétée
+        return None, 'doses multiples'
+    lo, hi = first[0], first[1]
+    if hi is not None and (hi < lo or hi / lo > 2): return None, 'fourchette large'
+    if hi == lo: hi = None
+
+    # contrôle croisé avec les équivalences du même texte (« 1 comprimé pour 10 kg », « 1 mL pour 10 kg »)
+    per_lo = lo / n if basis == 'day' else lo
+    per_hi = (hi if hi is not None else lo) / n if basis == 'day' else (hi if hi is not None else lo)
+    checks = []
+    strength = product.get('m')
+    if strength:
+        for m in TABLET_EQ.finditer(t):
+            if not m.group(1): checks.append(strength / number(m.group(2)))
+    if product.get('c'):
+        for m in VOLUME_EQ.finditer(t):
+            if not m.group(1): checks.append(number(m.group(2)) / (number(m.group(3)) if m.group(3) else 1) * product['c'])
+    if checks and not any(per_lo * 0.88 <= c <= per_hi * 1.12 for c in checks):
+        return None, 'incohérent avec l\'équivalence du RCP'
+    return [compact(lo), compact(hi) if hi else None, n, basis], 'ok'
+
+
 def main():
     source = sys.argv[1]
     out = sys.argv[2] if len(sys.argv) > 2 else 'medvet-oral.json'
@@ -246,11 +383,15 @@ def main():
     routes = collections.defaultdict(set)
     for r in rows("Voie d'administration"):
         routes[r['ID_produit']].add(r["Voie d'administration"])
+    poso = collections.defaultdict(dict)
+    for r in rows('Posologie'):
+        poso[r['ID_produit']][r['Espèces cibles']] = r['Posologie']
     packs = collections.defaultdict(list)
     for r in rows('Présentations'):
         packs[r['ID_produit']].append((r['Présentation'] or '', r['GTIN']))
 
     products = []
+    poso_texts = {}
     stats = collections.Counter()
     for pid, m in meds.items():
         form = m['Forme pharmaceutique'] or ''
@@ -354,12 +495,42 @@ def main():
             product['r'] = 'spot'
             product['w'] = parse_weight_band(name, texts)
             stats['spot-on avec tranche de poids lue' if product['w'] else 'spot-on sans tranche de poids lue'] += 1
+
+        # posologie du RCP, par espèce : texte repris tel quel, et dose proposée quand elle est sans ambiguïté
+        texts, proposed = {}, {}
+        for code, label in (('CN', 'Chien'), ('CT', 'Chat')):
+            if code not in codes:
+                continue
+            text = poso_text(poso[pid].get(label))
+            if not text:
+                stats['posologie absente'] += 1
+                continue
+            texts[code] = text
+            if spot:
+                continue
+            result, why = suggest(text, product)
+            stats[f'suggestion : {why}'] += 1
+            if result:
+                lo, hi, per_day, basis = result
+                proposed[code] = [lo, hi, per_day] + (['day'] if basis == 'day' else [])
+        if proposed:
+            product['o'] = proposed
+        if texts and link:
+            if link in poso_texts:
+                stats['liens de fiche en double'] += 1
+            else:
+                # [texte chien, texte chat] : 0 quand le texte du chat est celui du chien, null quand il n'y en a pas
+                dog, cat = texts.get('CN'), texts.get('CT')
+                poso_texts[link] = [dog, 0 if dog and cat == dog else cat]
         products.append(product)
 
     products.sort(key=lambda p: (fold(p['b']), p['m'] or p.get('c') or 0, fold(p['d'])))
     latest = max((str(m['Date de mise à jour de la monographie'] or '')[:10] for m in meds.values()), default='')
     with open(out, 'w', encoding='utf-8') as f:
         json.dump({'v': 1, 'date': latest, 'p': products}, f, ensure_ascii=False, separators=(',', ':'))
+    poso_out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(os.path.dirname(out) or '.', 'medvet-poso.json')
+    with open(poso_out, 'w', encoding='utf-8') as f:
+        json.dump({'v': 1, 'date': latest, 'p': poso_texts}, f, ensure_ascii=False, separators=(',', ':'))
     readable = sum(1 for p in products for k in p['k'] if k[0] is not None)
     total = sum(len(p['k']) for p in products)
     with_gtin = sum(1 for p in products for k in p['k'] if k[3])
@@ -372,6 +543,11 @@ def main():
                 'spot-on avec tranche de poids lue', 'spot-on sans tranche de poids lue'):
         print(f'  {key} : {stats[key]}')
     print(f'écrit dans {out}')
+    suggested = sum(len(p.get('o', {})) for p in products)
+    print(f'posologies : {len(poso_texts)} fiches avec texte, {suggested} doses proposées à l\'avance (espèce par espèce)')
+    for key in sorted(k for k in stats if k.startswith('suggestion') or k.startswith('posologie') or k.startswith('liens')):
+        print(f'  {key} : {stats[key]}')
+    print(f'écrit dans {poso_out}')
 
 
 if __name__ == '__main__':

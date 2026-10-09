@@ -7,7 +7,8 @@
 //   substance (libellé Med'Vet : l'appli cherche alors parmi tous les articles de la substance),
 //   brand (marque : restreint la recherche à cette marque, absente = toutes),
 //   route ('oral' comprimés et liquides buvables | 'inj' injectables | 'spot' spot-on : article choisi selon le poids),
-//   interval (spot-on : jours entre deux applications, pour compter les pipettes)
+//   interval (spot-on : jours entre deux applications, pour compter les pipettes),
+//   suggested (true : la posologie vient d'une suggestion Med'Vet que personne n'a encore confirmée ni modifiée)
 // Un dosage ou article (format) :
 //   name, mg (par comprimé), perBlister (comprimés par plaquette), blisters (plaquettes par boîte),
 //   split ('none' | 'half' | 'quarter' : plus petit morceau possible), price (la boîte, facultatif), unit ('cp' | 'gél.'),
@@ -384,6 +385,7 @@ export function normalizeDrug(raw = {}) {
     brand: typeof raw.brand === 'string' && raw.brand ? raw.brand : undefined,
     route: ROUTES.includes(raw.route) ? raw.route : 'oral',
     interval: optInt(raw.interval) ?? undefined,
+    suggested: raw.suggested === true ? true : undefined,
     link: typeof raw.link === 'string' && /^https:\/\//.test(raw.link) ? raw.link : undefined,
     formats: Array.isArray(raw.formats) ? raw.formats.filter((f) => f && typeof f === 'object').map(normalizeFormat) : [],
   };
@@ -650,13 +652,59 @@ export function formatFromProduct(product, pack) {
   });
 }
 
-export function drugFromProduct(product, pack) {
+// Posologie que Med'Vet propose à l'avance pour ce produit (champ « o » de l'index : dose, rythme, sans ambiguïté
+// dans la fiche), ou undefined. Pour une espèce précise, c'est celle de cette espèce ; sans espèce, il faut que
+// toutes les espèces du produit donnent exactement la même posologie. `species` du résultat : l'espèce à
+// retenir pour le médicament (absente quand la posologie vaut pour les deux).
+export function suggestedPosology(product, species) {
+  const o = product.o;
+  if (!o) return undefined;
+  const codes = product.s.split(',');
+  let pick;
+  let only;
+  if (species) {
+    if (!codes.includes(species)) return undefined;
+    pick = o[species];
+    only = codes.length > 1 ? species : undefined;
+  } else {
+    const all = codes.map((c) => o[c]);
+    if (all.some((x) => !x) || all.some((x) => JSON.stringify(x) !== JSON.stringify(all[0]))) return undefined;
+    pick = all[0];
+    only = codes.length === 1 ? codes[0] : undefined;
+  }
+  if (!Array.isArray(pick)) return undefined;
+  const [min, max, perDay, basis] = pick;
+  if (!isNum(min) || min <= 0 || !Number.isInteger(perDay) || perDay < 1 || perDay > 4) return undefined;
+  if (max != null && !(isNum(max) && max > min)) return undefined;
+  return { min, max: max ?? undefined, perDay, basis: basis === 'day' ? 'day' : 'intake', species: only };
+}
+
+export function drugFromProduct(product, pack, species) {
   const substance = substanceOf(product);
+  const suggestion = routeOf(product) === 'spot' ? undefined : suggestedPosology(product, species);
   return normalizeDrug({
     name: substance ? substance.label : product.b,
     substance: substance?.label,
     route: routeOf(product),
     link: product.l ? (product.l.startsWith('https://') ? product.l : LINK_PREFIX + product.l) : undefined,
     formats: routeOf(product) === 'spot' ? [] : [formatFromProduct(product, pack)],
+    ...(suggestion ? { ...suggestion, suggested: true } : {}),
   });
+}
+
+// --- texte de la rubrique « Posologie » du RCP (medvet-poso.json) -----------------------------
+
+// Clé d'une fiche dans medvet-poso.json : la fin de l'adresse Med'Vet.
+export const posoKey = (link) => (typeof link === 'string' && link.startsWith(LINK_PREFIX) ? link.slice(LINK_PREFIX.length) : link);
+
+// Textes à montrer pour une fiche : [{ species: 'CN' | 'CT' | null, text }]. Une seule entrée sans espèce quand le
+// chien et le chat ont le même texte ; `species` précise l'espèce du patient (sinon les deux textes, étiquetés).
+export function rcpTexts(entry, species) {
+  if (!Array.isArray(entry)) return [];
+  const dog = typeof entry[0] === 'string' ? entry[0] : null;
+  const cat = entry[1] === 0 ? dog : typeof entry[1] === 'string' ? entry[1] : null;
+  if (species === 'CN') return dog ? [{ species: 'CN', text: dog }] : [];
+  if (species === 'CT') return cat ? [{ species: 'CT', text: cat }] : [];
+  if (dog && cat && dog === cat) return [{ species: null, text: dog }];
+  return [dog && { species: 'CN', text: dog }, cat && { species: 'CT', text: cat }].filter(Boolean);
 }
