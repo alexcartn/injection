@@ -103,6 +103,16 @@ def strength_of(pa, name):
     return compact(total) if any(w is not None and abs(w - total) < 1e-6 for w in written) else None
 
 
+def valid_gtin(code):
+    """Chiffres du GTIN s'il est bien formé (longueur et chiffre de contrôle), sinon chaîne vide."""
+    code = re.sub(r'\D', '', str(code or ''))
+    if len(code) not in (8, 12, 13, 14):
+        return ''
+    digits = [int(c) for c in code.zfill(14)]
+    total = sum(d * (3 if i % 2 == 0 else 1) for i, d in enumerate(digits[:-1]))
+    return code if (10 - total % 10) % 10 == digits[-1] else ''
+
+
 def compact(value):
     return int(value) if isinstance(value, float) and value.is_integer() else value
 
@@ -126,9 +136,10 @@ def main():
         actives[r['ID_produit']].append(r)
     packs = collections.defaultdict(list)
     for r in rows('Présentations'):
-        packs[r['ID_produit']].append(r['Présentation'] or '')
+        packs[r['ID_produit']].append((r['Présentation'] or '', r['GTIN']))
 
     products = []
+    stats = collections.Counter()
     for pid, m in meds.items():
         form = m['Forme pharmaceutique'] or ''
         codes = [c for c, label in (('CN', 'Chien'), ('CT', 'Chat')) if label in species[pid]]
@@ -148,18 +159,25 @@ def main():
         if re.search(r'chiens?\s+et\s+chats?|chats?\s+et\s+chiens?', name, re.I):
             codes = ['CN', 'CT']  # le libellé du produit fait foi quand la liste des espèces est incomplète
 
-        # conditionnement : [plaquettes par boîte, comprimés par plaquette, texte d'origine si illisible]
-        found, seen = [], set()
+        # conditionnement : [plaquettes par boîte, comprimés par plaquette, texte d'origine si illisible, GTIN]
+        found, seen = [], {}
         texts = []
-        for text in packs[pid]:
+        for text, raw_gtin in packs[pid]:
             text = clean(text)
             texts.append(text)
             blisters, per = parse_pack(text)
+            gtin = valid_gtin(raw_gtin)
             key = (blisters, per) if blisters else (None, None, text)
             if key in seen:
+                known = seen[key][3].split(',') if seen[key][3] else []
+                if gtin and gtin not in known:
+                    known.append(gtin)  # plusieurs codes pour le même conditionnement : on les garde tous
+                    stats['gtin_multiples'] += len(known) == 2
+                    seen[key][3] = ','.join(known)
                 continue
-            seen.add(key)
-            found.append([blisters, per] if blisters else [None, None, text])
+            entry = [blisters, per, '', gtin] if blisters else [None, None, text, gtin]
+            seen[key] = entry
+            found.append(entry)
         if not found:
             continue
 
@@ -184,7 +202,9 @@ def main():
         json.dump({'v': 1, 'date': latest, 'p': products}, f, ensure_ascii=False, separators=(',', ':'))
     readable = sum(1 for p in products for k in p['k'] if k[0] is not None)
     total = sum(len(p['k']) for p in products)
-    print(f'{len(products)} produits, {total} présentations dont {readable} lisibles, écrit dans {out}')
+    with_gtin = sum(1 for p in products for k in p['k'] if k[3])
+    print(f'{len(products)} produits, {total} présentations dont {readable} lisibles et {with_gtin} avec GTIN valide '
+          f'({stats["gtin_multiples"]} conditionnements avec plusieurs codes), écrit dans {out}')
 
 
 if __name__ == '__main__':

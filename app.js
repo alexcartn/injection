@@ -4,7 +4,7 @@ import { ANIMALS } from './animals.js';
 import {
   plan, tabletText, tabletSpeech, searchIndex, packText, productName, formatFromProduct, drugFromProduct,
   normalizeDrug, normalizeFormat, normalizePrefs, fold, TOLERANCES, MAX_PER_INTAKE,
-  substanceOf, listSubstances, brandsOf, marketFormats, formatPackText,
+  substanceOf, listSubstances, brandsOf, marketFormats, formatPackText, gtinCodes,
 } from './rx.js';
 
 const STORE_KEY = 'injection:sections:v1';
@@ -848,6 +848,18 @@ function candidatesFor(drug) {
   return { formats: marketFormats(rxData.p, drug.substance, { species, brand: drug.brand, dispense }), market: true, species };
 }
 
+// GTIN de l'article, à copier d'un toucher. Plusieurs tailles de boîte regroupées : un code par boîte.
+function gtinNode(f) {
+  const multi = f.boxes?.length > 1;
+  const boxes = multi ? f.boxes : [{ blisters: f.blisters, gtin: f.gtin }];
+  const items = boxes.flatMap((b) => gtinCodes(b.gtin).map((code) => ({ b, code })));
+  if (!items.length) return null;
+  return el('p', { class: 'rx-gtin' }, items.map(({ b, code }) => el('span', {},
+    multi ? `${countText(b.blisters, 'plaquette')} : ` : '',
+    el('span', { class: 'rx-gtin-code' }, `GTIN ${code}`),
+  )));
+}
+
 // Sous le nom de l'article : forme, conditionnement, espèces, et lien vers sa fiche Med'Vet.
 function articleLine(f) {
   const species = f.species?.split(',').map((c) => SPECIES_LABEL[c]).join(' et ');
@@ -935,6 +947,7 @@ function altRow(drug, o, days, market) {
     el('span', { class: 'name' }, formatLabel(drug, o.format)),
     market && el('span', { class: 'rx-alt-text' }, [o.format.form?.toLowerCase(), formatPackText(o.format)].filter(Boolean).join(' · ')),
     el('span', { class: 'rx-alt-text' }, parts.join(' · ')),
+    market && gtinNode(o.format),
     !o.ok && el('span', { class: 'rnote rnote-warn' }, `hors tolérance ${signedPercent(o.dev)}`),
     market && o.format.link && el('a', { class: 'rx-link', href: o.format.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
   );
@@ -976,6 +989,7 @@ function rxResult(drug, openEditor) {
       el('span', { class: 'rx-vname' }, formatLabel(drug, best.format)),
     ),
     c.market && articleLine(best.format),
+    c.market && gtinNode(best.format),
     intakeLine(best, r.target),
     supplyLines(best, days),
   );
@@ -1050,7 +1064,11 @@ function fmtEditor(drug, f, rerender, commit) {
     field('Se coupe en', select(SPLIT_CHOICES, f.split, (v) => { f.split = v; }, commit)),
     field('Comprimés par plaquette', numInput(f.perBlister, (v) => { f.perBlister = Number.isInteger(v) && v > 0 ? v : null; }, false, commit)),
     field('Plaquettes par boîte', numInput(f.blisters, (v) => { f.blisters = Number.isInteger(v) && v > 0 ? v : 1; }, false, commit)),
-    field('Prix de la boîte (€, facultatif)', numInput(f.price, (v) => { f.price = v ?? undefined; }, false, commit), 'wide'),
+    field('Prix de la boîte (€, facultatif)', numInput(f.price, (v) => { f.price = v ?? undefined; }, false, commit)),
+    field('GTIN (facultatif)', textInput(gtinCodes(f.gtin).join(', '), (v) => {
+      const codes = v.split(/[\s,;]+/).filter(Boolean);
+      f.gtin = codes.length && codes.every((c) => /^\d{8,14}$/.test(c)) ? codes.join(',') : undefined;
+    }, commit)),
     button('Retirer ce dosage', () => {
       if (!confirm(`Retirer le dosage « ${f.name || 'Sans nom'} » ?`)) return;
       drug.formats.splice(drug.formats.indexOf(f), 1);
@@ -1198,7 +1216,10 @@ function rxSearch(onPick) {
       el('p', { class: 'rx-hit-name' }, productName(product), el('span', { class: 'rx-hit-meta' }, `${actives} · ${species}`)),
       product.m == null && el('p', { class: 'rx-hint' }, 'Dosage par comprimé à saisir après l’ajout.'),
       el('ul', { class: 'rx-packs' }, product.k.map((pack) => el('li', {},
-        el('span', {}, packText(pack, product.u)),
+        el('div', {},
+          el('span', {}, packText(pack, product.u)),
+          pack[3] && el('span', { class: 'rx-gtin rx-gtin-code' }, gtinCodes(pack[3]).map((c) => `GTIN ${c}`).join(' · ')),
+        ),
         button('Ajouter', () => { message = onPick(product, pack); run(); }, 'btn-small'),
       ))),
     );

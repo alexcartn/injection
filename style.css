@@ -1402,6 +1402,20 @@ body[data-view="rx"] > .prefs { display: none; }
 }
 .rx-alt-row .rx-link { font-size: var(--t-xs); }
 
+/* GTIN : chiffres tabulaires, sélectionnés d'un toucher pour les copier */
+.rx-gtin {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  margin: var(--s-1) 0 0;
+  color: var(--ink-2);
+  font: 600 var(--t-sm) / 1.2 var(--font-num);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.rx-gtin-code { user-select: all; }
+.rx-packs .rx-gtin { display: block; margin: 0; }
+
 /* « Mes dosages » : replié quand la substance suffit */
 .rx-stock { display: grid; gap: var(--s-3); }
 .rx-stock > summary {

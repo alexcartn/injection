@@ -8,7 +8,8 @@
 //   brand (marque : restreint la recherche à cette marque, absente = toutes)
 // Un dosage en stock (format) :
 //   name, mg (par comprimé), perBlister (comprimés par plaquette), blisters (plaquettes par boîte),
-//   split ('none' | 'half' | 'quarter' : plus petit morceau possible), price (la boîte, facultatif), unit ('cp' | 'gél.')
+//   split ('none' | 'half' | 'quarter' : plus petit morceau possible), price (la boîte, facultatif), unit ('cp' | 'gél.'),
+//   gtin (code de la boîte, facultatif ; plusieurs codes séparés par des virgules)
 
 export const MAX_PER_INTAKE = 6; // au-delà, on ne propose plus ce dosage : trop de comprimés à donner d'un coup
 export const DEFAULT_PREFS = { tol: 0.1, split: 'half', dispense: 'blister', rank: 'waste', source: 'medvet' };
@@ -208,6 +209,7 @@ export function normalizeFormat(raw = {}) {
     split: SPLITS.includes(raw.split) ? raw.split : 'none',
     price: isNum(raw.price) && raw.price >= 0 ? raw.price : undefined,
     unit: raw.unit === 'gél.' ? 'gél.' : 'cp',
+    gtin: typeof raw.gtin === 'string' && /^\d{8,14}(,\d{8,14})*$/.test(raw.gtin) ? raw.gtin : undefined,
   };
 }
 
@@ -244,6 +246,11 @@ export const fold = (text) => String(text).toLowerCase().normalize('NFD').replac
 
 const prepare = (text) => fold(text).replace(/,/g, '.');
 
+// GTIN d'un conditionnement. Med'Vet les donne sur 14 chiffres : le zéro de tête n'est que le remplissage du
+// GTIN-13 (l'EAN imprimé sur la boîte), qu'on affiche donc sans lui.
+export const gtinShown = (code) => (code.length === 14 && code.startsWith('0') ? code.slice(1) : code);
+export const gtinCodes = (codes) => (codes ? codes.split(',').filter(Boolean).map(gtinShown) : []);
+
 // Produits qui contiennent tous les mots cherchés (dans la marque, le nom ou le principe actif).
 // Ceux dont la marque commence par le premier mot passent devant.
 export function searchIndex(products, query, limit = 30) {
@@ -251,7 +258,7 @@ export function searchIndex(products, query, limit = 30) {
   if (!words.length) return [];
   const hits = [];
   for (const product of products) {
-    product.h ??= prepare(`${product.b} ${product.d} ${product.a.map((a) => a[0]).join(' ')}`);
+    product.h ??= prepare(`${product.b} ${product.d} ${product.a.map((a) => a[0]).join(' ')} ${product.k.map((k) => k[3] ?? '').join(' ')}`);
     if (words.every((w) => product.h.includes(w))) hits.push(product);
   }
   const first = (p) => (prepare(p.b).startsWith(words[0]) ? 0 : 1);
@@ -315,7 +322,7 @@ export function formatPackText(format) {
   const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
   if (format.boxes?.length > 1) {
     // plusieurs tailles de boîte du même produit : la plaquette remise est la même
-    const list = format.boxes.map((n) => (n === 1 ? 'une seule' : n));
+    const list = format.boxes.map((b) => (b.blisters === 1 ? 'une seule' : b.blisters));
     return `plaquettes de ${format.perBlister} (boîtes de ${list.slice(0, -1).join(', ')} ou ${list.at(-1)} plaquettes)`;
   }
   return format.blisters > 1 ? `${plural(format.blisters, 'plaquette')} de ${format.perBlister}` : plural(format.perBlister, what);
@@ -337,7 +344,7 @@ export function marketFormats(products, label, { species, brand, dispense = 'bli
       const key = dispense === 'box' ? `${product.d}|${pack[0]}|${pack[1]}` : `${product.d}|${pack[1]}`;
       const known = out.get(key);
       if (known) {
-        known.boxes = [...new Set([...known.boxes, pack[0]])].sort((a, b) => a - b);
+        if (!known.boxes.some((b) => b.blisters === pack[0])) known.boxes = [...known.boxes, { blisters: pack[0], gtin: pack[3] || undefined }].sort((a, b) => a.blisters - b.blisters);
         if (pack[0] < known.blisters) known.blisters = pack[0]; // la plus petite boîte sert au calcul
         continue;
       }
@@ -347,7 +354,7 @@ export function marketFormats(products, label, { species, brand, dispense = 'bli
         form: product.f,
         species: product.s,
         assoc: product.a.length > 1,
-        boxes: [pack[0]],
+        boxes: [{ blisters: pack[0], gtin: pack[3] || undefined }],
         link: product.l ? (product.l.startsWith('https://') ? product.l : LINK_PREFIX + product.l) : undefined,
       });
     }
@@ -383,6 +390,7 @@ export function formatFromProduct(product, pack) {
     blisters: pack[0] ?? 1,
     split: ['none', 'half', 'quarter'][product.x] ?? 'none',
     unit: product.u,
+    gtin: pack[3] || undefined,
   });
 }
 
