@@ -6,6 +6,8 @@ import {
   normalizeDrug, normalizeFormat, normalizePrefs, fold, TOLERANCES, MAX_PER_INTAKE,
   substanceOf, listSubstances, brandsOf, marketFormats, formatPackText, gtinCodes, isLiquid, isBand, routeOf, planBand, SYRINGES,
   suggestedPosology, posoKey, rcpTexts,
+  posologyStatus, intakeSentence, supplyParts, supplyPhrase, orderWarnings, orderTotals, normalizeProtocol,
+  normalizePrices, boxOf, withPrices, isUnhandledCombo, productLink,
 } from './rx.js';
 
 const STORE_KEY = 'injection:sections:v1';
@@ -16,6 +18,8 @@ const WEIGHT_WARN_ABOVE = 100;
 const PREFS_KEY = 'injection:prefs';
 const RX_KEY = 'injection:rx:v1';
 const RX_PREFS_KEY = 'injection:rx-prefs:v1';
+const RX_PROTOCOLS_KEY = 'injection:rx-protocols:v1';
+const RX_PRICES_KEY = 'injection:rx-prices:v1';
 const ROUND_STEPS = [0, 0.01, 0.05, 0.1];
 const DRIP_SETS = [20, 60];
 // Un arrondi qui change la dose de plus de 10 % est refusé : la valeur exacte est gardée.
@@ -129,13 +133,36 @@ function loadPrefs() {
   return prefs;
 }
 
-// Ordonnance : le catalogue des médicaments remis par la clinique (comprimés), enregistré sur l'appareil.
+// Ordonnance : la bibliothèque des médicaments remis par la clinique, enregistrée sur l'appareil.
 function loadRx() {
   try {
     const parsed = JSON.parse(storeGet(RX_KEY) || '[]');
-    if (Array.isArray(parsed)) return parsed.filter((d) => d && typeof d === 'object').map(normalizeDrug);
-  } catch { /* données corrompues : catalogue vide */ }
+    if (Array.isArray(parsed)) {
+      const raws = parsed.filter((d) => d && typeof d === 'object');
+      const drugs = raws.map(normalizeDrug);
+      // un médicament enregistré avant les protocoles n'a pas d'identifiant : on lui en fixe un une fois pour toutes
+      if (raws.some((d) => typeof d.id !== 'string' || !d.id)) storeSet(RX_KEY, JSON.stringify(drugs));
+      return drugs;
+    }
+  } catch { /* données corrompues : bibliothèque vide */ }
   return [];
+}
+
+// Protocoles : des ordonnances types (plusieurs médicaments et leur durée), écrites par la clinique.
+function loadRxProtocols() {
+  try {
+    const parsed = JSON.parse(storeGet(RX_PROTOCOLS_KEY) || '[]');
+    if (Array.isArray(parsed)) return parsed.filter((p) => p && typeof p === 'object').map(normalizeProtocol).filter((p) => p.name);
+  } catch { /* protocoles corrompus : aucun */ }
+  return [];
+}
+
+// Prix des boîtes saisis par la clinique, par GTIN (Med'Vet ne donne pas de prix).
+function loadRxPrices() {
+  try {
+    return normalizePrices(JSON.parse(storeGet(RX_PRICES_KEY) || '{}'));
+  } catch { /* prix corrompus : aucun */ }
+  return {};
 }
 
 function loadRxPrefs() {
@@ -148,9 +175,12 @@ function loadRxPrefs() {
 const state = {
   view: 'doses', // 'doses' ou 'rx' ; on rouvre toujours sur les doses
   rx: {
-    drugs: loadRx(),
+    drugs: loadRx(), // la bibliothèque : tous les médicaments de la clinique
     prefs: loadRxPrefs(),
-    days: null, // durée du traitement : propre au patient en cours, jamais mémorisée
+    protocols: loadRxProtocols(),
+    prices: loadRxPrices(),
+    days: null, // durée par défaut du traitement : propre au patient en cours, jamais mémorisée
+    order: [], // l'ordonnance du patient en cours : { drug, days } (days vide = durée par défaut), jamais mémorisée
   },
   sections: loadSections(),
   species: loadSpecies(),
@@ -166,6 +196,8 @@ const state = {
 const save = () => storeSet(STORE_KEY, JSON.stringify(state.sections));
 const saveRx = () => storeSet(RX_KEY, JSON.stringify(state.rx.drugs));
 const saveRxPrefs = () => storeSet(RX_PREFS_KEY, JSON.stringify(state.rx.prefs));
+const saveRxProtocols = () => storeSet(RX_PROTOCOLS_KEY, JSON.stringify(state.rx.protocols));
+const saveRxPrices = () => storeSet(RX_PRICES_KEY, JSON.stringify(state.rx.prices));
 const savePrefs = () => storeSet(PREFS_KEY, JSON.stringify(state.prefs));
 
 // --- utilitaires ------------------------------------------------------------
@@ -652,6 +684,7 @@ function updateWeight() {
     state.petNotes = '';
     petInput.value = '';
     notesInput.value = '';
+    if (rxNameInput) rxNameInput.value = '';
   }
   printBtn.disabled = !state.weight;
   printNote.textContent = state.weight
@@ -664,9 +697,11 @@ function updateWeight() {
   warn.textContent = message;
   warn.hidden = !message;
 
-  // un poids vidé = patient suivant : la durée du traitement précédent ne doit pas rester
+  // un poids vidé = patient suivant : la durée et l'ordonnance du précédent ne doivent pas rester
   if (text === '') {
     state.rx.days = null;
+    state.rx.order = [];
+    rxCards.clear();
     syncRxDays?.();
   }
 
@@ -753,10 +788,14 @@ function fillSheet() {
 }
 
 const pageTitle = document.title;
-window.addEventListener('beforeprint', fillSheet);
+// Ctrl+P compris : l'onglet Ordonnance imprime l'ordonnance, l'autre la fiche d'hospitalisation
+window.addEventListener('beforeprint', () => (state.view === 'rx' ? fillRxSheet() : fillSheet()));
 window.addEventListener('afterprint', () => { document.title = pageTitle; });
 
-petInput.addEventListener('input', () => { state.petName = petInput.value.trim(); });
+petInput.addEventListener('input', () => {
+  state.petName = petInput.value.trim();
+  if (rxNameInput) rxNameInput.value = petInput.value;
+});
 notesInput.addEventListener('input', () => { state.petNotes = notesInput.value.trimEnd(); });
 printBtn.addEventListener('click', () => { fillSheet(); window.print(); });
 
@@ -781,7 +820,7 @@ roundSelect.addEventListener('change', () => {
 
 const rxRoot = document.getElementById('rx');
 const pageHeading = document.querySelector('h1');
-const HEADINGS = { doses: pageHeading.textContent, rx: 'Ordonnance : version à remettre' };
+const HEADINGS = { doses: pageHeading.textContent, rx: 'Ordonnance du patient' };
 const DAY_CHOICES = [3, 5, 7, 10, 14, 21, 30];
 const SPLIT_CHOICES = [['none', 'Pas coupé'], ['half', 'Moitiés'], ['quarter', 'Quarts']];
 const eur = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' });
@@ -809,12 +848,18 @@ function bandText(b) {
 }
 
 let rxBuilt = false;
-let rxListEl;
+let rxOrderEl;
+let rxOrderEmpty;
+let rxOrderCount;
+let rxNameInput;
 let rxDaysInput;
 let rxDaysChips;
 let rxAddPanel;
 let rxAddButton;
-const rxCards = new Map(); // médicament -> { root, refresh, open }
+let rxProtoPanel;
+let rxProtoButton;
+let closeRxPanels = () => {};
+const rxCards = new Map(); // médicament de l'ordonnance -> { root, refresh, info }
 let rxIndexPromise = null;
 let rxData = null; // index Med'Vet chargé
 let rxIndexFailed = false;
@@ -879,7 +924,7 @@ function candidatesFor(drug) {
   if (rxIndexFailed) return { formats: drug.formats, market: false, failed: true };
   if (!rxData) return { loading: true };
   const species = state.species !== 'all' ? state.species : drug.species;
-  return { formats: marketFormats(rxData.p, drug.substance, { route: drug.route, species, brand: drug.brand, dispense }), market: true, species };
+  return { formats: withPrices(marketFormats(rxData.p, drug.substance, { route: drug.route, species, brand: drug.brand, dispense }), state.rx.prices), market: true, species };
 }
 
 // GTIN de l'article, à copier d'un toucher. Plusieurs tailles de boîte regroupées : un code par boîte.
@@ -1027,36 +1072,91 @@ function equivalentsNode(o) {
   );
 }
 
+// --- l'ordonnance du patient en cours ----------------------------------------------------------
+
+const orderLine = (drug) => state.rx.order.find((l) => l.drug === drug);
+const lineDays = (drug) => orderLine(drug)?.days ?? state.rx.days; // la durée de la ligne, sinon la durée par défaut
+const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+const dateFr = (iso) => iso.split('-').reverse().join('/');
+const SPECIES_LOWER = { CN: 'chien', CT: 'chat' };
+
+function addToOrder(drug, days = null) {
+  if (!orderLine(drug)) state.rx.order.push({ drug, days });
+}
+
+function removeFromOrder(drug) {
+  state.rx.order = state.rx.order.filter((l) => l.drug !== drug);
+  rxCards.delete(drug);
+  renderRx();
+}
+
+// Le texte d'état de la posologie d'un médicament, pour la bibliothèque.
+function statusText(drug) {
+  const st = posologyStatus(drug);
+  if (st === 'missing') return 'posologie à renseigner';
+  if (st === 'suggested') return 'posologie proposée par Med’Vet : à vérifier';
+  if (st === 'validated') return `posologie validée${drug.validated ? ` le ${dateFr(drug.validated)}` : ''}`;
+  return '';
+}
+
+// Prix de la boîte, saisi par la clinique et gardé par GTIN : sert au coût de la ligne et au total de l'ordonnance.
+function priceField(gtin, packLabel) {
+  if (!gtin) return null;
+  const known = state.rx.prices[gtin];
+  const input = el('input', {
+    type: 'text',
+    inputmode: 'decimal',
+    autocomplete: 'off',
+    value: isNum(known) ? String(known).replace('.', ',') : '',
+  });
+  input.addEventListener('change', () => {
+    const text = input.value.trim();
+    const n = parseNum(text);
+    if (text !== '' && n === null) { input.setAttribute('aria-invalid', 'true'); return; }
+    input.setAttribute('aria-invalid', 'false');
+    if (text === '') delete state.rx.prices[gtin];
+    else state.rx.prices[gtin] = n;
+    saveRxPrices();
+    renderRx();
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  return el('label', { class: 'field rx-price' }, el('span', { class: 'field-label' }, `Prix de la boîte (${packLabel}), en € : facultatif`), input);
+}
+
+const packLabelOf = (f) => {
+  const { n } = boxOf(f);
+  return packText([n, isLiquid(f) ? f.volume : isBand(f) ? f.volume : f.perBlister], f.unit, f.container);
+};
+
 // Spot-on : l'article dont la tranche de poids (lue dans le libellé du produit) contient le poids du patient.
-function rxResultBand(drug, c, openEditor, onArticle) {
-  const days = state.rx.days;
-  if (!drug.substance) return [rxNote('Choisissez la substance du spot-on pour trouver l’article selon le poids.', openEditor, 'Choisir')];
-  if (c.failed) return [rxNote('La base Med’Vet n’est pas disponible : un spot-on ne peut pas être choisi sans elle.', openEditor, 'Modifier')];
+// Renvoie { main, more } : main se lit d'un coup d'œil, more (article, GTIN, prix, alternatives) est replié.
+function rxResultBand(drug, c, days, openEditor, onInfo) {
+  const only = (node) => ({ main: [node], more: [] });
+  if (!drug.substance) return only(rxNote('Choisissez la substance du spot-on pour trouver l’article selon le poids.', openEditor, 'Choisir'));
+  if (c.failed) return only(rxNote('La base Med’Vet n’est pas disponible : un spot-on ne peut pas être choisi sans elle.', openEditor, 'Modifier'));
   const r = planBand({ ...drug, formats: c.formats }, { weight: state.weight, days });
   const who = SPECIES_LABEL[c.species]?.toLowerCase();
   const unread = r.unread ? el('p', { class: 'rx-hint' }, `${countText(r.unread, 'article')} sans tranche de poids lisible dans le libellé du produit : non proposé${r.unread > 1 ? 's' : ''}, à choisir sur la fiche Med’Vet.`) : null;
   if (r.status === 'formats') {
-    return [rxNote(`Aucun spot-on Med’Vet ${drug.substance.toLowerCase()}${who ? ` pour ${who}` : ''}${drug.brand ? ` en marque ${drug.brand}` : ''}.`, openEditor, 'Modifier')];
+    return only(rxNote(`Aucun spot-on Med’Vet ${drug.substance.toLowerCase()}${who ? ` pour ${who}` : ''}${drug.brand ? ` en marque ${drug.brand}` : ''}.`, openEditor, 'Modifier'));
   }
-  if (r.status === 'weight') return [el('p', { class: 'rx-hint' }, 'Saisissez le poids de l’animal.'), unread].filter(Boolean);
-  if (!r.options.length) return [el('p', { class: 'rx-warn', role: 'alert' }, 'Aucun de ces articles n’indique de tranche de poids dans son libellé : choisissez-le sur la fiche Med’Vet.'), unread].filter(Boolean);
+  if (r.status === 'weight') return { main: [el('p', { class: 'rx-hint' }, 'Saisissez le poids de l’animal.')], more: [unread].filter(Boolean) };
+  if (!r.options.length) return { main: [el('p', { class: 'rx-warn', role: 'alert' }, 'Aucun de ces articles n’indique de tranche de poids dans son libellé : choisissez-le sur la fiche Med’Vet.')], more: [unread].filter(Boolean) };
 
   const [best, ...others] = r.options;
-  onArticle(best.format);
-  const out = [];
+  onInfo({ best, c, days });
+  const main = [];
   if (!best.ok) {
-    out.push(el('p', { class: 'rx-warn', role: 'alert' },
+    main.push(el('p', { class: 'rx-warn', role: 'alert' },
       `Aucune tranche de poids ne couvre ${fmtWeight.format(state.weight)} kg. La plus proche est à ${fmtMg.format(best.gap)} kg : à ne pas remettre sans vérification.`));
   }
   const f = best.format;
-  out.push(
+  main.push(
     el('p', { class: 'rx-pick' },
       el('span', { class: 'rx-label' }, best.ok ? 'Article à donner' : 'Plus proche'),
       el('span', { class: 'rx-vname' }, f.name),
     ),
-    articleLine(f),
-    gtinNode(f),
-    equivalentsNode(best),
+    el('p', { class: 'rx-sentence' }, intakeSentence(best, drug, days)),
     el('div', { class: 'rx-line' },
       el('span', { class: 'name' }, 'Par application'),
       el('span', { class: 'leader', 'aria-hidden': 'true' }),
@@ -1069,26 +1169,29 @@ function rxResultBand(drug, c, openEditor, onArticle) {
   );
   const s = best.supply;
   if (s?.packs) {
-    out.push(el('div', { class: 'rx-line' },
+    main.push(el('div', { class: 'rx-line' },
       el('span', { class: 'name' }, `À remettre · ${countText(r.applications, 'application')}`),
       el('span', { class: 'leader', 'aria-hidden': 'true' }),
       el('div', { class: 'dose' }, String(s.count), el('span', { class: 'dose-unit' }, s.count > 1 ? 'boîtes' : 'boîte')),
       el('div', { class: 'sub' }, el('span', { class: 'calc rx-bits' },
         el('span', { class: 'extra' }, `de ${countText(s.perBox, 'pipette')}`),
         el('span', { class: 'extra' }, s.leftover > 0 ? `reste ${countText(s.leftover, 'pipette')}` : 'aucun reste'),
+        s.cost !== null && el('span', { class: 'extra' }, `≈ ${eur.format(s.cost)}`),
       )),
     ));
   } else if (!drug.interval) {
-    out.push(el('p', { class: 'rx-hint' }, 'Indiquez l’intervalle entre deux applications (Modifier) et la durée pour compter les pipettes.'));
+    main.push(el('p', { class: 'rx-hint' }, 'Indiquez l’intervalle entre deux applications (Modifier) et la durée pour compter les pipettes.'));
   } else if (!days) {
-    out.push(el('p', { class: 'rx-hint' }, 'Choisissez la durée pour compter les pipettes.'));
+    main.push(el('p', { class: 'rx-hint' }, 'Choisissez la durée pour compter les pipettes.'));
   }
-  out.push(unread);
 
+  const more = [articleLine(f), gtinNode(f), equivalentsNode(best)];
+  if (s?.packs) more.push(priceField(s.gtin, packText([s.perBox, f.volume], 'pip')));
+  more.push(unread);
   const shown = best.ok ? others.filter((o) => o.ok).slice(0, 8) : others.slice(0, 3);
   const okOthers = others.filter((o) => o.ok).length;
   if (shown.length) {
-    out.push(el('details', { class: 'rx-alt' },
+    more.push(el('details', { class: 'rx-alt' },
       el('summary', {}, `Autres articles (${shown.length}${okOthers > shown.length ? ` sur ${okOthers}` : ''})`),
       el('ul', {}, shown.map((o) => el('li', { class: 'rx-alt-row' },
         el('span', { class: 'name' }, o.format.name),
@@ -1101,20 +1204,21 @@ function rxResultBand(drug, c, openEditor, onArticle) {
       ))),
     ));
   }
-  return out.filter(Boolean);
+  return { main, more: more.filter(Boolean) };
 }
 
-function rxResult(drug, openEditor, onArticle = () => {}) {
-  const days = state.rx.days;
+// Résultat d'un médicament pour une durée : { main, more }. onInfo reçoit l'option choisie (pour le récap).
+function rxResult(drug, days, openEditor, onInfo) {
   const prefs = state.rx.prefs;
   const c = candidatesFor(drug);
+  const only = (node) => ({ main: [node], more: [] });
   if (c.loading) {
     ensureRxIndex();
-    return [el('p', { class: 'rx-hint' }, 'Chargement de la base Med’Vet…')];
+    return only(el('p', { class: 'rx-hint' }, 'Chargement de la base Med’Vet…'));
   }
-  if (drug.route === 'spot') return rxResultBand(drug, c, openEditor, onArticle);
+  if (drug.route === 'spot') return rxResultBand(drug, c, days, openEditor, onInfo);
   const r = plan({ ...drug, formats: c.formats }, { weight: state.weight, days, prefs });
-  if (r.status === 'drug') return [rxNote(`Renseignez la dose (mg/kg) et le nombre de ${intakeName(drug)}s par jour.`, openEditor, 'Renseigner')];
+  if (r.status === 'drug') return only(rxNote(`Renseignez la dose (mg/kg) et le nombre de ${intakeName(drug)}s par jour.`, openEditor, 'Renseigner'));
   if (r.status === 'formats') {
     let text;
     if (c.market) {
@@ -1125,41 +1229,43 @@ function rxResult(drug, openEditor, onArticle = () => {}) {
     } else {
       text = r.skipped ? 'Indiquez les mg par comprimé du dosage.' : 'Choisissez la substance pour chercher dans tout Med’Vet, ou ajoutez un dosage.';
     }
-    return [rxNote(text, openEditor, 'Modifier')];
+    return only(rxNote(text, openEditor, 'Modifier'));
   }
-  if (r.status === 'weight') return [el('p', { class: 'rx-hint' }, 'Saisissez le poids de l’animal.')];
+  if (r.status === 'weight') return only(el('p', { class: 'rx-hint' }, 'Saisissez le poids de l’animal.'));
 
   const [best, ...others] = r.options;
-  onArticle(best.format);
-  const out = [];
+  onInfo({ best, c, days });
+  const main = [];
   if (!best.ok) {
-    out.push(el('p', { class: 'rx-warn', role: 'alert' },
+    main.push(el('p', { class: 'rx-warn', role: 'alert' },
       `Aucun ${c.market ? 'article' : 'dosage'} ne tombe à ±${Math.round(prefs.tol * 100)} % de la dose cible. Le plus proche donne ${signedPercent(best.dev)} : à ne pas remettre sans vérification.${c.market ? ' Autoriser les quarts de comprimé ou élargir la tolérance (Réglages) peut ouvrir d’autres choix.' : ''}`));
   }
-  out.push(
+  main.push(
     el('p', { class: 'rx-pick' },
       el('span', { class: 'rx-label' }, best.ok ? (c.market ? 'Article à donner' : 'Version à donner') : 'Plus proche'),
       el('span', { class: 'rx-vname' }, formatLabel(drug, best.format)),
     ),
-    c.market && articleLine(best.format),
-    c.market && gtinNode(best.format),
-    c.market && equivalentsNode(best),
+    el('p', { class: 'rx-sentence' }, intakeSentence(best, drug, days)),
     intakeLine(best, r.target),
     supplyLines(best, days),
   );
-  if (r.skipped && !c.market) out.push(el('p', { class: 'rx-hint' }, `${countText(r.skipped, 'dosage')} sans mg par comprimé : ignoré${r.skipped > 1 ? 's' : ''}.`));
-  if (!c.market && prefs.source === 'medvet' && !drug.substance) out.push(el('p', { class: 'rx-hint' }, 'Choisissez la substance (Modifier) pour chercher dans tout Med’Vet.'));
+  if (r.skipped && !c.market) main.push(el('p', { class: 'rx-hint' }, `${countText(r.skipped, 'dosage')} sans mg par comprimé : ignoré${r.skipped > 1 ? 's' : ''}.`));
+  if (!c.market && prefs.source === 'medvet' && !drug.substance) main.push(el('p', { class: 'rx-hint' }, 'Choisissez la substance (Modifier) pour chercher dans tout Med’Vet.'));
 
+  const more = [];
+  if (c.market) {
+    more.push(articleLine(best.format), gtinNode(best.format), equivalentsNode(best), priceField(boxOf(best.format).gtin, packLabelOf(best.format)));
+  }
   // Med'Vet : on garde les meilleurs articles dans la tolérance ; sinon les plus proches
   const okOthers = others.filter((o) => o.ok).length;
   const shown = !c.market ? others : best.ok ? others.filter((o) => o.ok).slice(0, 8) : others.slice(0, 3);
   if (shown.length) {
-    out.push(el('details', { class: 'rx-alt' },
+    more.push(el('details', { class: 'rx-alt' },
       el('summary', {}, c.market ? `Autres articles (${shown.length}${okOthers > shown.length ? ` sur ${okOthers}` : ''})` : `Autres dosages (${shown.length})`),
       el('ul', {}, shown.map((o) => altRow(drug, o, days, c.market))),
     ));
   }
-  return out.filter(Boolean);
+  return { main, more: more.filter(Boolean) };
 }
 
 // --- posologie du RCP, à côté du résultat ---------------------------------------------------------
@@ -1191,8 +1297,9 @@ function rcpContent(target, entry) {
   ];
 }
 
-// --- une carte par médicament : le résultat se redessine, l'éditeur garde ses champs ------------
+// --- une ligne d'ordonnance par médicament : le résultat se redessine, le reste suit ------------
 
+// Une ligne d'ordonnance : nom, posologie, résultat à lire d'un coup d'œil, détails repliés.
 function rxCard(drug) {
   const known = rxCards.get(drug);
   if (known) return known;
@@ -1200,20 +1307,46 @@ function rxCard(drug) {
   const title = el('h2', { class: 'rx-name' });
   const chip = el('span', { class: 'chip' });
   const routeChip = el('span', { class: 'chip chip-route' });
-  const toggle = el('button', { type: 'button', class: 'btn btn-ghost btn-small', 'aria-expanded': 'false' }, 'Modifier');
   const poso = el('p', { class: 'rx-poso' });
+  const status = el('p', { class: 'rx-status' });
   const suggest = el('div', { class: 'rx-suggest', role: 'status', hidden: true },
     el('span', {}, 'Posologie proposée d’après la fiche Med’Vet : à vérifier avant de remettre.'),
-    button('Confirmer', () => { drug.suggested = undefined; saveRx(); refresh(); }, 'btn-small'),
+    button('Confirmer', () => { drug.suggested = undefined; drug.validated = todayIso(); saveRx(); refreshDrug(drug); }, 'btn-small'),
   );
+  const warns = el('div', { class: 'rx-warns' });
   const result = el('div', { class: 'rx-result' });
+  const moreBody = el('div', { class: 'rx-more-body' });
   const rcpSummary = el('summary', {}, 'Posologie du RCP');
   const rcpBody = el('div', { class: 'rx-rcp-body' });
   const rcp = el('details', { class: 'rx-rcp', hidden: true }, rcpSummary, rcpBody);
-  const editor = el('div', { class: 'rx-editor', hidden: true });
+  const more = el('details', { class: 'rx-more', hidden: true }, el('summary', {}, 'Détails de l’article et alternatives'), moreBody, rcp);
+
+  // durée propre à cette ligne ; vide = la durée par défaut (affichée en grisé)
+  const daysInput = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: 3, 'aria-label': 'Durée de cette ligne, en jours' });
+  daysInput.addEventListener('input', () => {
+    const text = daysInput.value.trim();
+    const n = /^\d{1,3}$/.test(text) ? Number(text) : null;
+    const line = orderLine(drug);
+    if (line) line.days = n > 0 ? n : null;
+    daysInput.setAttribute('aria-invalid', String(text !== '' && !(n > 0)));
+    refresh();
+  });
+  daysInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') daysInput.blur(); });
+  const daysRow = el('label', { class: 'rx-daysrow' },
+    el('span', { class: 'days-label' }, 'Durée'),
+    daysInput,
+    el('span', { class: 'days-unit' }, 'jours'),
+  );
+
   const root = el('section', { class: 'rx-card' },
-    el('div', { class: 'rx-head' }, el('div', { class: 'rx-title' }, title, chip, routeChip), toggle),
-    poso, suggest, result, rcp, editor,
+    el('div', { class: 'rx-head' },
+      el('div', { class: 'rx-title' }, title, chip, routeChip),
+      el('div', { class: 'rx-head-actions' },
+        button('Modifier', () => openRxEditor(drug), 'btn-ghost btn-small'),
+        button('Retirer', () => removeFromOrder(drug), 'btn-ghost btn-small'),
+      ),
+    ),
+    poso, status, suggest, warns, daysRow, result, more,
   );
 
   // L'extrait ne se charge qu'à l'ouverture, puis reste ouvert quand le résultat se redessine.
@@ -1244,8 +1377,9 @@ function rxCard(drug) {
     fillRcp();
   });
 
-  let built = false;
-  const refresh = () => {
+  const card = { root, refresh: null, info: null };
+  const refresh = (opts) => {
+    const days = lineDays(drug);
     title.textContent = drug.name || 'Sans nom';
     chip.textContent = SPECIES_LABEL[drug.species] ?? '';
     chip.className = `chip chip-${drug.species}`;
@@ -1259,32 +1393,81 @@ function rxCard(drug) {
       drug.note && el('span', { class: 'rx-note-text' }, drug.note),
       !market && drug.link && el('a', { class: 'rx-link', href: drug.link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
     ].filter(Boolean));
-    suggest.hidden = !drug.suggested;
-    let article = null;
-    result.replaceChildren(...rxResult(drug, () => open(true), (f) => { article = f; }));
-    target = drug.route === 'spot' && !article ? null : rcpTarget(drug, article);
+
+    // posologie : proposée par Med'Vet (à confirmer) ou validée par la clinique, avec sa date
+    const st = posologyStatus(drug);
+    suggest.hidden = st !== 'suggested';
+    status.hidden = st !== 'validated';
+    status.textContent = st === 'validated' ? `Posologie validée par la clinique${drug.validated ? ` le ${dateFr(drug.validated)}` : ''}` : '';
+
+    // garde-fous : autre espèce que le patient, même substance ou même classe qu'une autre ligne
+    const messages = [];
+    if (state.species !== 'all' && drug.species && drug.species !== state.species) {
+      messages.push(`Médicament enregistré pour le ${SPECIES_LOWER[drug.species]} : le patient est un ${SPECIES_LOWER[state.species]}. À vérifier.`);
+    }
+    messages.push(...(orderWarnings(state.rx.order.map((l) => l.drug)).get(drug) ?? []));
+    warns.replaceChildren(...messages.map((m) => el('p', { class: 'rx-warn' }, m)));
+
+    let info = null;
+    const out = rxResult(drug, days, () => openRxEditor(drug), (i) => { info = i; });
+    result.replaceChildren(...out.main);
+    moreBody.replaceChildren(...out.more);
+    target = drug.route === 'spot' && !info ? null : rcpTarget(drug, info?.best.format ?? null);
     rcp.hidden = !target;
     if (target) {
       rcpSummary.textContent = `Posologie du RCP · ${target.label}`;
       fillRcp();
     }
-  };
-  const open = (on) => {
-    if (on && !built) { buildRxEditor(drug, editor, refresh, () => open(false)); built = true; }
-    editor.hidden = !on;
-    toggle.textContent = on ? 'Terminé' : 'Modifier';
-    toggle.setAttribute('aria-expanded', String(on));
-    if (on) editor.querySelector('input, select')?.focus({ preventScroll: true });
-  };
-  toggle.addEventListener('click', () => open(editor.hidden));
+    more.hidden = !(out.more.length || target);
 
-  const card = { root, refresh, open };
+    card.info = info && {
+      label: formatLabel(drug, info.best.format),
+      sentence: intakeSentence(info.best, drug, days),
+      parts: supplyParts(info.best),
+      phrase: supplyPhrase(info.best),
+      cost: info.best.supply?.cost ?? null,
+      ok: info.best.ok,
+      market: Boolean(info.c.market),
+      format: info.best.format,
+    };
+
+    const line = orderLine(drug);
+    daysInput.placeholder = state.rx.days ? String(state.rx.days) : '–';
+    if (document.activeElement !== daysInput) {
+      daysInput.value = line?.days ? String(line.days) : '';
+      daysInput.setAttribute('aria-invalid', 'false');
+    }
+    if (opts?.quiet !== true) renderRecap();
+  };
+  card.refresh = refresh;
   rxCards.set(drug, card);
-  refresh();
+  refresh({ quiet: true });
   return card;
 }
 
-// --- édition d'un médicament -----------------------------------------------------------------
+// Un médicament a changé (éditeur, confirmation) : sa ligne, les alertes des autres lignes, la bibliothèque et le récap suivent.
+function refreshDrug(drug) {
+  for (const line of state.rx.order) rxCards.get(line.drug)?.refresh({ quiet: true });
+  renderLibrary();
+  renderRecap();
+}
+
+// --- édition d'un médicament, dans un panneau à part ------------------------------------------
+
+let rxDialog;
+let rxDialogTitle;
+let rxDialogBody;
+
+function openRxEditor(drug) {
+  rxDialogTitle.textContent = drug.name || 'Nouveau médicament';
+  buildRxEditor(drug, rxDialogBody, () => { rxDialogTitle.textContent = drug.name || 'Nouveau médicament'; refreshDrug(drug); }, closeRxEditor);
+  if (!rxDialog.open) rxDialog.showModal();
+  rxDialogBody.querySelector('input, select')?.focus({ preventScroll: true });
+}
+
+function closeRxEditor() {
+  if (rxDialog.open) rxDialog.close();
+}
 
 function fmtEditor(drug, f, rerender, commit) {
   const liquid = isLiquid(f);
@@ -1316,8 +1499,12 @@ function fmtEditor(drug, f, rerender, commit) {
   );
 }
 
+const FAMILY_SUGGESTIONS = ['AINS', 'Antibiotique', 'Corticoïde', 'Antalgique', 'Gastroprotecteur', 'Antiémétique', 'Antiparasitaire', 'Anticonvulsivant'];
+
 function buildRxEditor(drug, host, refresh, close) {
   const commit = () => { saveRx(); refresh(); };
+  // la dose saisie par la clinique vaut validation (à la date du jour) ; une dose proposée par Med'Vet ne le vaut pas
+  const posology = (apply) => (v) => { apply(v); drug.suggested = undefined; drug.validated = todayIso(); };
   const formatsHost = el('div', { class: 'rx-formats' });
   const renderFormats = () => formatsHost.replaceChildren(
     ...(drug.formats.length ? drug.formats.map((f) => fmtEditor(drug, f, renderFormats, commit)) : [el('p', { class: 'rx-hint' }, 'Aucun dosage : ajoutez-en un ci-dessous.')]),
@@ -1372,21 +1559,24 @@ function buildRxEditor(drug, host, refresh, close) {
     field('Prises par jour', select(
       [['', '–'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']],
       drug.perDay ? String(drug.perDay) : '',
-      (v) => { drug.perDay = v ? Number(v) : null; drug.suggested = undefined; },
+      posology((v) => { drug.perDay = v ? Number(v) : null; }),
       commit,
     )),
-    field('Dose (mg/kg)', numInput(drug.min, (v) => { drug.min = v; drug.suggested = undefined; }, true, commit)),
-    field('Dose max (mg/kg)', numInput(drug.max, (v) => { drug.max = v ?? undefined; drug.suggested = undefined; }, false, commit)),
-    field('Dose donnée', select([['intake', 'par prise ou injection'], ['day', 'par jour']], drug.basis, (v) => { drug.basis = v; drug.suggested = undefined; }, commit), 'wide'),
+    field('Dose (mg/kg)', numInput(drug.min, posology((v) => { drug.min = v; }), true, commit)),
   );
-  const help = el('p', { class: 'rx-help' }, 'La dose se lit sur la fiche du médicament. « Par jour » est divisée par le nombre de prises.');
+  const help = el('p', { class: 'rx-help' }, 'La dose se lit sur la fiche du médicament. Une dose saisie ici vaut validation par la clinique.');
+  const advancedPosology = el('div', { class: 'rx-form' },
+    field('Dose max (mg/kg)', numInput(drug.max, posology((v) => { drug.max = v ?? undefined; }), false, commit)),
+    field('Dose donnée', select([['intake', 'par prise ou injection'], ['day', 'par jour']], drug.basis, posology((v) => { drug.basis = v; }), commit), 'wide'),
+    el('p', { class: 'rx-help wide' }, '« Par jour » est divisée par le nombre de prises.'),
+  );
   const intervalFields = el('div', { class: 'rx-form' },
     field('Une application tous les (jours)', numInput(drug.interval, (v) => { drug.interval = Number.isInteger(v) && v > 0 ? v : undefined; }, false, commit), 'wide'),
     el('p', { class: 'rx-help wide' }, 'Le spot-on est choisi selon le poids, d’après la tranche écrite dans le libellé du produit : aucune dose à saisir. L’intervalle (30 jours, 84 jours...) sert à compter les pipettes pour la durée choisie.'),
   );
   const stock = el('details', { class: 'rx-stock', open: !drug.substance },
-      el('summary', {}, 'Mes dosages (si pas de substance, ou en mode « Mon stock »)'),
-      formatsHost,
+    el('summary', {}, 'Mes dosages (si pas de substance, ou en mode « Mon stock »)'),
+    formatsHost,
     el('div', { class: 'rx-actions' },
       button('Ajouter depuis Med’Vet', () => {
         searchHost.hidden = !searchHost.hidden;
@@ -1403,10 +1593,25 @@ function buildRxEditor(drug, host, refresh, close) {
     searchHost,
   );
 
+  // champs rares : repliés, sauf si l'un d'eux est déjà renseigné
+  const familyInput = textInput(drug.family, (v) => { drug.family = v || undefined; }, commit);
+  familyInput.setAttribute('list', 'rx-families');
+  const advanced = el('details', { class: 'rx-adv', open: Boolean(drug.brand || isNum(drug.max) || drug.basis === 'day' || drug.family || drug.note) },
+    el('summary', {}, 'Avancé : marque, dose max, classe, note'),
+    el('div', { class: 'rx-form' },
+      field('Marque', brandSel, 'wide'),
+      field('Classe (alertes entre médicaments)', familyInput, 'wide'),
+      el('datalist', { id: 'rx-families' }, FAMILY_SUGGESTIONS.map((x) => el('option', { value: x }))),
+      field('Note (imprimée sur l’ordonnance)', textInput(drug.note, (v) => { drug.note = v; }, commit), 'wide'),
+    ),
+    advancedPosology,
+  );
+
   // la voie change les champs : posologie en mg/kg (oral, injectable) ou intervalle (spot-on, selon le poids)
   const applyRoute = () => {
     const spot = drug.route === 'spot';
     posologyFields.hidden = spot;
+    advancedPosology.hidden = spot;
     help.hidden = spot;
     stock.hidden = spot;
     intervalFields.hidden = !spot;
@@ -1430,21 +1635,23 @@ function buildRxEditor(drug, host, refresh, close) {
       field('Nom', textInput(drug.name, (v) => { drug.name = v; }, commit), 'wide'),
       field('Voie', routeSel, 'wide'),
       field('Substance (Med’Vet)', substanceSel, 'wide'),
-      field('Marque', brandSel, 'wide'),
-      field('Espèce', select([['', 'Chien et chat'], ['CN', 'Chien'], ['CT', 'Chat']], drug.species || '', (v) => { drug.species = v || undefined; }, commit)),
-      field('Note', textInput(drug.note, (v) => { drug.note = v; }, commit)),
+      field('Espèce', select([['', 'Chien et chat'], ['CN', 'Chien'], ['CT', 'Chat']], drug.species || '', (v) => { drug.species = v || undefined; }, commit), 'wide'),
     ),
     posologyFields,
     help,
     intervalFields,
+    advanced,
     stock,
     el('div', { class: 'rx-actions rx-end' },
       button('Supprimer ce médicament', () => {
-        if (!confirm(`Supprimer « ${drug.name || 'Sans nom'} » du catalogue ?`)) return;
+        if (!confirm(`Supprimer « ${drug.name || 'Sans nom'} » de la bibliothèque ?`)) return;
         state.rx.drugs.splice(state.rx.drugs.indexOf(drug), 1);
+        state.rx.order = state.rx.order.filter((l) => l.drug !== drug);
+        for (const protocol of state.rx.protocols) protocol.items = protocol.items.filter((i) => i.drug !== drug.id);
         rxCards.delete(drug);
         saveRx();
-        renderRx();
+        saveRxProtocols();
+        close();
       }, 'btn-danger btn-small'),
       button('Terminé', close, 'btn-primary btn-small'),
     ),
@@ -1473,7 +1680,7 @@ function rxSearch(onPick, { route } = {}) {
     const query = input.value.trim();
     if (query.length < 2) {
       hits.replaceChildren();
-      status.textContent = message || `Base Med’Vet du ${data.date} : articles pour chien et chat (voie orale, injectables, spot-on). Posologies non incluses.`;
+      status.textContent = message || `Base Med’Vet du ${data.date} : articles pour chien et chat (voie orale, injectables, spot-on).`;
       return;
     }
     const found = searchIndex(pool, query, 15);
@@ -1485,6 +1692,7 @@ function rxSearch(onPick, { route } = {}) {
 
   const hit = (product) => {
     const kind = routeOf(product);
+    const combo = isUnhandledCombo(product);
     const bare = (name) => name.replace(/^(\S.*?)\s*\([^()]*\)\s*$/, '$1').toLowerCase();
     let actives;
     if (kind === 'spot') actives = [...new Set(product.a.map((a) => bare(a[0])))].join(' + ');
@@ -1497,9 +1705,12 @@ function rxSearch(onPick, { route } = {}) {
       hint = product.w
         ? `Tranche de poids : ${bandText({ lo: product.w[0], hi: product.w[1], excl: Boolean(product.w[2]) })}`
         : 'Tranche de poids non lue dans le libellé : voir la fiche Med’Vet.';
+    } else if (combo) {
+      hint = 'Association de plusieurs substances, le plus souvent dosée par tranche de poids (NexGard, Milbemax, Drontal...) : l’appli ne la calcule pas. Voir la fiche Med’Vet, ou « Saisir à la main ».';
     } else if ((product.m ?? product.c) == null) {
       hint = 'Dosage par comprimé à saisir après l’ajout.';
     }
+    const link = productLink(product);
     return el('div', { class: 'rx-hit' },
       el('p', { class: 'rx-hit-name' }, productName(product), el('span', { class: 'rx-hit-meta' }, meta)),
       hint && el('p', { class: 'rx-hint' }, hint),
@@ -1508,8 +1719,9 @@ function rxSearch(onPick, { route } = {}) {
           el('span', {}, packText(pack, product.u, product.ct)),
           pack[3] && el('span', { class: 'rx-gtin rx-gtin-code' }, gtinCodes(pack[3]).map((c) => `GTIN ${c}`).join(' · ')),
         ),
-        button('Ajouter', () => { message = onPick(product, pack); run(); }, 'btn-small'),
+        !combo && button('Ajouter', () => { message = onPick(product, pack); run(); }, 'btn-small'),
       ))),
+      combo && link && el('a', { class: 'rx-link', href: link, target: '_blank', rel: 'noopener' }, 'Fiche Med’Vet'),
     );
   };
 
@@ -1525,7 +1737,7 @@ function rxSearch(onPick, { route } = {}) {
   return { root, focus: () => input.focus() };
 }
 
-// --- ajout d'un médicament au catalogue ---------------------------------------------------------
+// --- ajout d'un médicament à la bibliothèque ---------------------------------------------------------
 
 // Le dosage (ou article) saisi correspond-il à ce conditionnement du produit ?
 function sameFormat(f, product, pack) {
@@ -1533,57 +1745,323 @@ function sameFormat(f, product, pack) {
   return product.u === 'mL' ? f.volume === pack[1] && f.bottles === pack[0] : f.perBlister === pack[1] && f.blisters === (pack[0] ?? 1);
 }
 
+// --- ajout d'un médicament à la bibliothèque et à l'ordonnance -----------------------------------
+
+const scrollToCard = (drug) => rxCards.get(drug)?.root.scrollIntoView({ block: 'nearest', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
+
+// Un produit trouvé dans Med'Vet : il rejoint la bibliothèque (une carte par substance et par voie) et l'ordonnance.
+// Sans posologie à lui proposer, le panneau d'édition s'ouvre pour la saisir tout de suite.
 function addDrugFromProduct(product, pack) {
   const substance = substanceOf(product);
   const brand = fold(product.b);
   const route = routeOf(product);
   const existing = state.rx.drugs.find((d) => d.route === route && (substance ? d.substance === substance.label : fold(d.name) === brand));
   const species = state.species !== 'all' ? state.species : undefined;
+  let drug = existing;
+  let text;
   if (existing) {
-    const f = formatFromProduct(product, pack);
     const exists = existing.formats.some((g) => sameFormat(g, product, pack));
-    if (!exists && !substance) existing.formats.push(f);
+    if (!exists && !substance) existing.formats.push(formatFromProduct(product, pack));
     // un médicament encore sans posologie reçoit celle que Med'Vet propose, à vérifier comme les autres
     const suggestion = route === 'spot' || (isNum(existing.min) && existing.perDay) ? undefined : suggestedPosology(product, existing.species ?? species);
     if (suggestion) Object.assign(existing, { ...suggestion, species: existing.species ?? suggestion.species, suggested: true });
-    saveRx();
-    showRxCard(existing);
-    return suggestion
-      ? `« ${existing.name} » est déjà dans le catalogue : posologie Med’Vet proposée, à vérifier.`
-      : `« ${existing.name} » est déjà dans le catalogue.`;
+    text = suggestion
+      ? `« ${existing.name} » est déjà dans la bibliothèque : posologie Med’Vet proposée, à vérifier.`
+      : `« ${existing.name} » est déjà dans la bibliothèque.`;
+  } else {
+    drug = drugFromProduct(product, pack, species);
+    state.rx.drugs.push(drug);
+    text = route === 'spot'
+      ? `« ${drug.name} » ajouté : l’article se choisit selon le poids.`
+      : drug.suggested
+        ? `« ${drug.name} » ajouté avec la posologie proposée par Med’Vet : à vérifier.`
+        : `« ${drug.name} » ajouté : renseignez maintenant sa posologie.`;
   }
-  const drug = drugFromProduct(product, pack, species);
-  state.rx.drugs.push(drug);
   saveRx();
-  showRxCard(drug);
-  if (route === 'spot') return `« ${drug.name} » ajouté : l’article se choisit selon le poids.`;
-  return drug.suggested
-    ? `« ${drug.name} » ajouté avec la posologie proposée par Med’Vet : à vérifier.`
-    : `« ${drug.name} » ajouté : renseignez maintenant sa posologie (le texte de la fiche est sous le résultat).`;
-}
-
-// Affiche la carte, ouvre son éditeur et la ramène à l'écran.
-function showRxCard(drug) {
-  if (state.species !== 'all' && drug.species && drug.species !== state.species) {
-    state.species = 'all';
-    storeSet(SPECIES_KEY, 'all');
-    document.querySelector('input[name="species"][value="all"]').checked = true;
-  }
+  addToOrder(drug);
+  closeRxPanels();
   renderRx();
-  const card = rxCard(drug);
-  card.open(true);
-  card.root.scrollIntoView({ block: 'nearest', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
+  scrollToCard(drug);
+  if (posologyStatus(drug) === 'missing') openRxEditor(drug);
+  return `${text} Il est sur l’ordonnance.`;
 }
 
 function addBlankDrug() {
   const drug = normalizeDrug({ name: '', formats: [{}] });
   state.rx.drugs.push(drug);
   saveRx();
-  showRxCard(drug);
-  rxCard(drug).root.querySelector('.rx-form input')?.focus();
+  addToOrder(drug);
+  closeRxPanels();
+  renderRx();
+  openRxEditor(drug);
 }
 
-// --- construction de la vue -----------------------------------------------------------------
+// --- protocoles : des ordonnances types ----------------------------------------------------------
+
+function applyProtocol(protocol) {
+  let added = 0;
+  let missing = 0;
+  for (const item of protocol.items) {
+    const drug = state.rx.drugs.find((d) => d.id === item.drug);
+    if (!drug) { missing++; continue; }
+    if (!orderLine(drug)) { state.rx.order.push({ drug, days: item.days }); added++; }
+  }
+  renderRx();
+  return `${protocol.name} : ${countText(added, 'médicament')} ajouté${added > 1 ? 's' : ''} à l’ordonnance${missing ? `, ${countText(missing, 'médicament')} introuvable${missing > 1 ? 's' : ''} dans la bibliothèque` : ''}.`;
+}
+
+function saveOrderAsProtocol() {
+  if (!state.rx.order.length) return 'L’ordonnance est vide : ajoutez d’abord des médicaments.';
+  const name = (prompt('Nom du protocole (ex. Post-op chien)') ?? '').trim().slice(0, 60);
+  if (!name) return '';
+  const items = state.rx.order.map((l) => ({ drug: l.drug.id, days: l.days ?? state.rx.days ?? null }));
+  const same = state.rx.protocols.find((p) => fold(p.name) === fold(name));
+  if (same) {
+    if (!confirm(`Remplacer le protocole « ${same.name} » ?`)) return '';
+    same.items = items;
+  } else {
+    state.rx.protocols.push(normalizeProtocol({ name, items }));
+  }
+  saveRxProtocols();
+  renderProtocols();
+  return `Protocole « ${name} » enregistré : ${countText(items.length, 'médicament')}.`;
+}
+
+let rxProtoList;
+let rxProtoMsg;
+function renderProtocols() {
+  if (!rxProtoList) return;
+  const say = (text) => { rxProtoMsg.textContent = text; };
+  rxProtoList.replaceChildren(...(state.rx.protocols.length
+    ? state.rx.protocols.map((protocol) => {
+      const names = protocol.items.map((i) => state.rx.drugs.find((d) => d.id === i.drug)?.name).filter(Boolean);
+      return el('li', { class: 'rx-lib-row' },
+        el('div', { class: 'rx-lib-info' },
+          el('p', { class: 'rx-lib-name' }, protocol.name),
+          el('p', { class: 'rx-hint' }, names.length ? names.join(' · ') : 'Aucun médicament de la bibliothèque'),
+        ),
+        el('div', { class: 'rx-actions' },
+          button('Ajouter à l’ordonnance', () => say(applyProtocol(protocol)), 'btn-small'),
+          button('Supprimer', () => {
+            if (!confirm(`Supprimer le protocole « ${protocol.name} » ?`)) return;
+            state.rx.protocols = state.rx.protocols.filter((p) => p !== protocol);
+            saveRxProtocols();
+            renderProtocols();
+          }, 'btn-danger btn-small'),
+        ),
+      );
+    })
+    : [el('li', { class: 'rx-hint' }, 'Aucun protocole. Un protocole regroupe plusieurs médicaments et leur durée (ex. « Post-op chien » : antibiotique, AINS, antalgique). Composez une ordonnance, puis enregistrez-la ici.')]));
+  rxProtoSave.disabled = !state.rx.order.length;
+}
+let rxProtoSave;
+
+// --- bibliothèque ----------------------------------------------------------------------------------
+
+let rxQuickAdd;
+let rxLibraryList;
+let rxLibrarySummary;
+function renderLibrary() {
+  if (!rxLibraryList) return;
+  const all = state.rx.drugs;
+  const shown = all.filter(matchesSpecies);
+  rxLibrarySummary.textContent = `Bibliothèque et réglages (${all.length})`;
+
+  rxQuickAdd.replaceChildren(...(shown.length
+    ? shown.map((drug) => el('button', {
+      type: 'button',
+      class: 'qchip',
+      'aria-pressed': String(Boolean(orderLine(drug))),
+      onclick: () => {
+        if (orderLine(drug)) removeFromOrder(drug);
+        else { addToOrder(drug); renderRx(); scrollToCard(drug); }
+      },
+    }, drug.name || 'Sans nom'))
+    : [el('p', { class: 'rx-hint' }, all.length
+      ? 'Aucun médicament de la bibliothèque pour cette espèce.'
+      : 'La bibliothèque est vide : cherchez un médicament ci-dessous. Il y restera pour les prochaines ordonnances.')]));
+
+  rxLibraryList.replaceChildren(...(shown.length
+    ? shown.map((drug) => {
+      const on = Boolean(orderLine(drug));
+      return el('li', { class: 'rx-lib-row' },
+        el('div', { class: 'rx-lib-info' },
+          el('p', { class: 'rx-lib-name' }, drug.name || 'Sans nom',
+            drug.species && el('span', { class: `chip chip-${drug.species}` }, SPECIES_LABEL[drug.species]),
+            drug.route !== 'oral' && el('span', { class: 'chip chip-route' }, ROUTE_LABEL[drug.route]),
+          ),
+          el('p', { class: 'rx-hint' }, [posoText(drug), statusText(drug)].filter(Boolean).join(' · ')),
+        ),
+        el('div', { class: 'rx-actions' },
+          el('button', { type: 'button', class: 'btn btn-small', disabled: on, onclick: () => { addToOrder(drug); renderRx(); scrollToCard(drug); } }, on ? 'Sur l’ordonnance' : 'Ajouter'),
+          button('Modifier', () => openRxEditor(drug), 'btn-ghost btn-small'),
+        ),
+      );
+    })
+    : []));
+}
+
+// --- récapitulatif : texte à donner, total, copie et impression -------------------------------------
+
+let rxRecapEl;
+let rxRecapRows;
+let rxRecapTotal;
+let rxRecapNote;
+let rxCopyBtn;
+let rxPrintBtn;
+let rxRecapMsg;
+let rxRecapTimer = 0;
+
+const rxSay = (text) => {
+  rxRecapMsg.textContent = text;
+  clearTimeout(rxRecapTimer);
+  if (text) rxRecapTimer = setTimeout(() => { rxRecapMsg.textContent = ''; }, 4000);
+};
+
+// Les lignes complètes de l'ordonnance : { drug, info }
+const rxDoneLines = () => state.rx.order.map((l) => ({ drug: l.drug, info: rxCards.get(l.drug)?.info })).filter((x) => x.info);
+
+function renderRecap() {
+  if (!rxRecapEl) return;
+  const lines = state.rx.order;
+  rxRecapEl.hidden = !lines.length;
+  if (rxProtoSave) rxProtoSave.disabled = !lines.length;
+  if (!lines.length) return;
+
+  const costs = [];
+  let incomplete = 0;
+  let suggested = 0;
+  rxRecapRows.replaceChildren(...lines.map((l, i) => {
+    const info = rxCards.get(l.drug)?.info;
+    if (posologyStatus(l.drug) === 'suggested') suggested++;
+    const name = `${i + 1}. ${info?.label ?? (l.drug.name || 'Sans nom')}`;
+    if (!info) {
+      incomplete++;
+      costs.push(null);
+      return el('div', { class: 'rx-line' },
+        el('span', { class: 'name' }, name),
+        el('span', { class: 'leader', 'aria-hidden': 'true' }),
+        el('div', { class: 'dose dose-empty' }, '–'),
+        el('div', { class: 'sub' }, el('span', { class: 'calc rx-bits' }, el('span', { class: 'extra' }, 'À compléter : posologie, article ou poids'))),
+      );
+    }
+    costs.push(info.cost);
+    return el('div', { class: 'rx-line' },
+      el('span', { class: 'name' }, name),
+      el('span', { class: 'leader', 'aria-hidden': 'true' }),
+      info.parts
+        ? el('div', { class: 'dose' }, String(info.parts.count), el('span', { class: 'dose-unit' }, info.parts.unit))
+        : el('div', { class: 'dose dose-empty' }, '–'),
+      el('div', { class: 'sub' }, el('span', { class: 'calc rx-bits' },
+        el('span', { class: 'extra' }, info.sentence),
+        info.parts?.detail && el('span', { class: 'extra' }, info.parts.detail),
+        !info.parts && el('span', { class: 'extra' }, 'choisissez la durée'),
+        info.cost !== null && el('span', { class: 'extra' }, `≈ ${eur.format(info.cost)}`),
+      )),
+    );
+  }));
+
+  const totals = orderTotals(costs);
+  rxRecapTotal.hidden = totals.total === null;
+  if (totals.total !== null) {
+    rxRecapTotal.textContent = `Total estimé ≈ ${eur.format(totals.total)}${totals.priced < totals.count ? ` (${totals.priced} ligne${totals.priced > 1 ? 's' : ''} sur ${totals.count} avec un prix)` : ''}`;
+  }
+
+  const notes = [];
+  if (!state.weight) notes.push('Saisissez le poids de l’animal.');
+  if (incomplete) notes.push(`${countText(incomplete, 'ligne')} à compléter.`);
+  if (suggested) notes.push(`${countText(suggested, 'ligne')} avec une posologie Med’Vet non confirmée.`);
+  rxRecapNote.textContent = notes.join(' ');
+  rxRecapNote.hidden = !notes.length;
+  const done = rxDoneLines().length;
+  rxCopyBtn.disabled = !state.weight || !done;
+  rxPrintBtn.disabled = !state.weight || !done;
+}
+
+// Le texte de l'ordonnance, à coller dans un message ou un logiciel de gestion.
+function recapText() {
+  const head = [
+    'Ordonnance',
+    state.petName,
+    state.species !== 'all' && SPECIES_LABEL[state.species],
+    state.weight && `${fmtWeight.format(state.weight)} kg`,
+    new Date().toLocaleDateString('fr-FR'),
+  ].filter(Boolean).join(' · ');
+  const body = rxDoneLines().map(({ drug, info }, i) => {
+    const give = info.phrase ? ` À remettre : ${info.phrase}.` : '';
+    const note = drug.note ? ` ${drug.note}` : '';
+    return `${i + 1}. ${info.label} : ${info.sentence}.${give}${note}`;
+  });
+  return [head, ...body].join('\n');
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = el('textarea', { 'aria-hidden': 'true', style: 'position:fixed;opacity:0;top:0' }, text);
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { /* copie refusée */ }
+    area.remove();
+    return ok;
+  }
+}
+
+// Ce qui mérite un second regard avant d'imprimer ; texte vide quand tout est en ordre.
+function printConcerns() {
+  const lines = state.rx.order;
+  const incomplete = lines.length - rxDoneLines().length;
+  const suggested = lines.filter((l) => posologyStatus(l.drug) === 'suggested').length;
+  const concerns = [];
+  if (incomplete) concerns.push(`${countText(incomplete, 'ligne')} incomplète${incomplete > 1 ? 's ne seront' : ' ne sera'} pas imprimée${incomplete > 1 ? 's' : ''}.`);
+  if (suggested) concerns.push(`${countText(suggested, 'ligne')} ${suggested > 1 ? 'ont' : 'a'} une posologie proposée par Med’Vet, pas encore confirmée.`);
+  return concerns.join('\n');
+}
+
+// Remplit la feuille d'ordonnance (visible à l'impression seulement). Appelé aussi par Ctrl+P.
+function fillRxSheet() {
+  const sheet = document.getElementById('rx-sheet');
+  const now = new Date();
+  const brand = document.querySelector('#sheet-head .sh-brand').cloneNode(true);
+  const date = brand.querySelector('.sh-date');
+  date.removeAttribute('id');
+  date.textContent = now.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' });
+
+  const done = rxDoneLines();
+  const totals = orderTotals(done.map((x) => x.info.cost));
+  sheet.replaceChildren(...[
+    brand,
+    el('h2', { class: 'sh-title' }, 'Ordonnance'),
+    el('dl', { class: 'sh-fields' },
+      el('div', { class: 'sh-name' }, el('dt', {}, 'Nom'), el('dd', {}, state.petName)),
+      el('div', {}, el('dt', {}, 'Espèce'), el('dd', {}, state.species === 'all' ? '' : speciesText())),
+      el('div', {}, el('dt', {}, 'Poids'), el('dd', {}, state.weight ? `${fmtWeight.format(state.weight)} kg` : '')),
+    ),
+    el('ol', { class: 'rs-list' }, done.map(({ drug, info }) => {
+      const f = info.format;
+      const gtin = info.market ? gtinCodes(boxOf(f).gtin)[0] : null;
+      return el('li', { class: 'rs-line' },
+        el('p', { class: 'rs-name' }, info.label),
+        el('p', { class: 'rs-intake' }, info.sentence),
+        info.phrase && el('p', { class: 'rs-give' }, `À remettre : ${info.phrase}`),
+        info.market && el('p', { class: 'rs-detail' }, [f.form?.toLowerCase(), formatPackText(f), gtin && `GTIN ${gtin}`].filter(Boolean).join(' · ')),
+        drug.note && el('p', { class: 'rs-note' }, drug.note),
+      );
+    })),
+    totals.total !== null && totals.priced === totals.count && el('p', { class: 'rs-total' }, `Total estimé ≈ ${eur.format(totals.total)}`),
+    el('p', { class: 'sh-meta' }, 'Quantités calculées par l’appli d’après le poids : à vérifier avant de remettre.'),
+    el('p', { class: 'rs-sign' }, 'Signature et cachet du vétérinaire'),
+  ].filter(Boolean));
+
+  const stamp = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  const kg = state.weight ? ` ${fmtWeight.format(state.weight)} kg` : '';
+  document.title = `Ordonnance ${state.petName || 'patient'}${kg} ${stamp}`;
+}
+
+// --- construction de la vue -----------------------------------------------------------------------
 
 function rxPrefField(label, key, options, format) {
   const node = el('select', { class: 'pick' },
@@ -1607,7 +2085,14 @@ function syncRxPrefs() {
 function buildRx() {
   rxBuilt = true;
 
-  // durée du traitement : saisie libre ou raccourcis
+  // patient : le nom est le même que celui de la fiche d'hospitalisation
+  rxNameInput = el('input', { id: 'rx-pet', class: 'text', type: 'text', autocomplete: 'off', maxlength: 60, placeholder: 'Facultatif', value: state.petName });
+  rxNameInput.addEventListener('input', () => {
+    state.petName = rxNameInput.value.trim();
+    petInput.value = rxNameInput.value;
+  });
+
+  // durée par défaut du traitement : saisie libre ou raccourcis ; chaque ligne peut avoir la sienne
   rxDaysInput = el('input', { id: 'rx-days', type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: 3, placeholder: '0' });
   rxDaysChips = DAY_CHOICES.map((n) => el('button', { type: 'button', class: 'dchip', 'aria-pressed': 'false', onclick: () => {
     state.rx.days = state.rx.days === n ? null : n;
@@ -1632,7 +2117,7 @@ function buildRx() {
 
   rxPrefsNow = el('span', { class: 'prefs-now' });
   const prefs = el('details', { class: 'prefs rx-prefs' },
-    el('summary', {}, 'Réglages ', rxPrefsNow),
+    el('summary', {}, 'Réglages du calcul ', rxPrefsNow),
     el('div', { class: 'prefs-body' },
       el('div', { class: 'rx-prefs-grid' },
         rxPrefField('Articles proposés', 'source', [['medvet', 'Tout Med’Vet'], ['stock', 'Mon stock (dosages saisis)']]),
@@ -1642,21 +2127,36 @@ function buildRx() {
         rxPrefField('Remise au client', 'dispense', [['box', 'Boîte entière'], ['blister', 'Plaquette ou flacon entier'], ['unit', 'Comprimés à l’unité (flacon entier pour un liquide)']]),
         rxPrefField('Classement des dosages', 'rank', [['waste', 'Moins de reste'], ['cost', 'Moins cher'], ['pills', 'Moins de comprimés'], ['exact', 'Dose la plus juste']]),
       ),
-      el('p', { class: 'prefs-note' }, `La tolérance est l’écart accepté avec la dose cible (une dose max n’est jamais dépassée). Un comprimé non sécable n’est jamais coupé. Au plus ${MAX_PER_INTAKE} comprimés par prise. Les liquides se donnent à la graduation de la seringue choisie, en flacons entiers. « Moins cher » demande le prix de la boîte, saisi sur un dosage de « Mon stock » : sur les articles Med’Vet, il revient à « moins de reste ».`),
+      el('p', { class: 'prefs-note' }, `La tolérance est l’écart accepté avec la dose cible (une dose max n’est jamais dépassée). Un comprimé non sécable n’est jamais coupé. Au plus ${MAX_PER_INTAKE} comprimés par prise. Les liquides se donnent à la graduation de la seringue choisie, en flacons entiers. « Moins cher » classe d’abord les articles dont le prix de la boîte est saisi (dans les détails d’une ligne) : sans prix, un article passe après.`),
     ),
   );
   syncRxPrefs();
 
-  // ajout d'un médicament : recherche Med'Vet ou saisie libre
+  // ajout d'un médicament : ma bibliothèque, ou une recherche Med'Vet, ou une saisie libre
   let search;
+  rxQuickAdd = el('div', { class: 'qchips' });
   rxAddPanel = el('div', { class: 'rx-add', hidden: true });
+  rxProtoPanel = el('div', { class: 'rx-add', hidden: true });
+  closeRxPanels = () => {
+    rxAddPanel.hidden = true;
+    rxProtoPanel.hidden = true;
+    rxAddButton.setAttribute('aria-expanded', 'false');
+    rxProtoButton.setAttribute('aria-expanded', 'false');
+  };
+  const togglePanel = (panel, button, other, otherButton) => {
+    panel.hidden = !panel.hidden;
+    button.setAttribute('aria-expanded', String(!panel.hidden));
+    other.hidden = true;
+    otherButton.setAttribute('aria-expanded', 'false');
+  };
   rxAddButton = button('Ajouter un médicament', () => {
-    rxAddPanel.hidden = !rxAddPanel.hidden;
-    rxAddButton.setAttribute('aria-expanded', String(!rxAddPanel.hidden));
+    togglePanel(rxAddPanel, rxAddButton, rxProtoPanel, rxProtoButton);
     if (!search) {
       search = rxSearch(addDrugFromProduct);
       rxAddPanel.replaceChildren(
-        el('h3', { class: 'rx-sub' }, 'Nouveau médicament'),
+        el('h3', { class: 'rx-sub' }, 'Dans ma bibliothèque'),
+        rxQuickAdd,
+        el('h3', { class: 'rx-sub' }, 'Nouveau médicament depuis Med’Vet'),
         search.root,
         button('Saisir à la main', addBlankDrug, 'btn-small'),
       );
@@ -1664,23 +2164,88 @@ function buildRx() {
     if (!rxAddPanel.hidden) search.focus();
   }, 'btn-primary');
   rxAddButton.setAttribute('aria-expanded', 'false');
+  rxProtoButton = button('Protocoles', () => {
+    togglePanel(rxProtoPanel, rxProtoButton, rxAddPanel, rxAddButton);
+  });
+  rxProtoButton.setAttribute('aria-expanded', 'false');
 
-  rxListEl = el('div', { class: 'rx-list' });
+  rxProtoList = el('ul', { class: 'rx-lib' });
+  rxProtoMsg = el('p', { class: 'prefs-note', role: 'status' });
+  rxProtoSave = button('Enregistrer l’ordonnance comme protocole', () => { rxProtoMsg.textContent = saveOrderAsProtocol(); }, 'btn-small');
+  rxProtoPanel.replaceChildren(
+    el('h3', { class: 'rx-sub' }, 'Protocoles de la clinique'),
+    rxProtoList,
+    rxProtoSave,
+    rxProtoMsg,
+  );
+
+  // récapitulatif
+  rxRecapRows = el('div', { class: 'rx-recap-rows' });
+  rxRecapTotal = el('p', { class: 'rx-total', hidden: true });
+  rxRecapNote = el('p', { class: 'rx-hint', hidden: true });
+  rxRecapMsg = el('p', { class: 'prefs-note', role: 'status' });
+  rxCopyBtn = button('Copier le texte', async () => { rxSay(await copyText(recapText()) ? 'Texte copié.' : 'Copie impossible : sélectionnez le texte à la main.'); });
+  rxPrintBtn = button('Imprimer l’ordonnance', () => {
+    const concerns = printConcerns();
+    if (concerns && !confirm(`${concerns}\n\nImprimer quand même ?`)) return;
+    fillRxSheet();
+    window.print();
+  }, 'btn-primary');
+  rxRecapEl = el('section', { class: 'rx-recap', 'aria-labelledby': 'rx-recap-title', hidden: true },
+    el('h3', { class: 'rx-sub', id: 'rx-recap-title' }, 'Récapitulatif à remettre'),
+    rxRecapRows,
+    rxRecapTotal,
+    rxRecapNote,
+    el('div', { class: 'rx-actions' }, rxCopyBtn, rxPrintBtn),
+    rxRecapMsg,
+  );
+
+  // bibliothèque et réglages : repliés
+  rxLibraryList = el('ul', { class: 'rx-lib' });
+  rxLibrarySummary = el('summary', {}, 'Bibliothèque et réglages');
+  const library = el('details', { class: 'rx-library' },
+    rxLibrarySummary,
+    el('div', { class: 'rx-library-body' },
+      el('h3', { class: 'rx-sub' }, 'Mes médicaments'),
+      rxLibraryList,
+      prefs,
+    ),
+  );
+
+  // panneau d'édition d'un médicament : tiroir à droite sur grand écran, plein écran sur téléphone
+  rxDialogTitle = el('h2', { id: 'rx-dialog-title', class: 'rx-dialog-title' });
+  rxDialogBody = el('div', { class: 'rx-dialog-body' });
+  rxDialog = el('dialog', { class: 'rx-dialog', 'aria-labelledby': 'rx-dialog-title' },
+    el('div', { class: 'rx-dialog-head' }, rxDialogTitle, button('Terminé', closeRxEditor, 'btn-primary btn-small')),
+    rxDialogBody,
+  );
+  rxDialog.addEventListener('close', () => { rxDialogBody.replaceChildren(); renderRx(); });
+  rxDialog.addEventListener('click', (e) => { if (e.target === rxDialog) closeRxEditor(); });
+  document.body.append(rxDialog);
+
+  rxOrderEl = el('div', { class: 'rx-list' });
+  rxOrderEmpty = el('p', { class: 'empty' }, 'L’ordonnance est vide. Ajoutez un médicament de votre bibliothèque, un protocole, ou cherchez-le dans Med’Vet : saisissez sa posologie une seule fois, elle sera gardée pour les prochains patients.');
+  rxOrderCount = el('span', { class: 'rx-count' });
   rxRoot.replaceChildren(
     el('div', { class: 'rx-top' },
+      field('Nom de l’animal', rxNameInput, 'rx-patient'),
       el('div', { class: 'rx-days' },
         el('label', { class: 'days-box', for: 'rx-days' },
-          el('span', { class: 'days-label' }, 'Durée'),
+          el('span', { class: 'days-label' }, 'Durée par défaut'),
           rxDaysInput,
           el('span', { class: 'days-unit' }, 'jours'),
         ),
         el('div', { class: 'dchips', role: 'group', 'aria-label': 'Durées courantes' }, rxDaysChips),
       ),
-      prefs,
-      el('div', { class: 'rx-bar' }, rxAddButton),
-      rxAddPanel,
     ),
-    rxListEl,
+    el('div', { class: 'rx-bar' }, rxAddButton, rxProtoButton),
+    rxAddPanel,
+    rxProtoPanel,
+    el('h3', { class: 'rx-sub rx-order-title' }, 'Ordonnance en cours ', rxOrderCount),
+    rxOrderEmpty,
+    rxOrderEl,
+    rxRecapEl,
+    library,
   );
   syncRxDays();
 }
@@ -1688,16 +2253,14 @@ function buildRx() {
 function renderRx() {
   if (!rxBuilt) buildRx();
   ensureRxIndex();
-  const shown = state.rx.drugs.filter(matchesSpecies);
-  const cards = shown.map((drug) => rxCard(drug));
-  cards.forEach((card) => card.refresh());
-  if (!state.rx.drugs.length) {
-    rxListEl.replaceChildren(el('p', { class: 'empty' }, 'Le catalogue est vide. Ajoutez un médicament : cherchez sa substance dans Med’Vet, saisissez sa posologie, et l’appli choisit l’article le plus adapté au poids.'));
-  } else if (!shown.length) {
-    rxListEl.replaceChildren(el('p', { class: 'empty' }, 'Aucun médicament du catalogue pour cette espèce.'));
-  } else {
-    rxListEl.replaceChildren(...cards.map((card) => card.root));
-  }
+  const cards = state.rx.order.map((l) => rxCard(l.drug));
+  cards.forEach((card) => card.refresh({ quiet: true }));
+  rxOrderEl.replaceChildren(...cards.map((card) => card.root));
+  rxOrderEmpty.hidden = cards.length > 0;
+  rxOrderCount.textContent = cards.length ? `(${cards.length})` : '';
+  renderLibrary();
+  renderProtocols();
+  renderRecap();
 }
 
 // --- passage d'une vue à l'autre ---------------------------------------------------------------

@@ -291,7 +291,13 @@ function bandSupplyFor(format, applications) {
   let best = null;
   for (const box of format.boxes ?? []) {
     const count = Math.ceil(applications / box.blisters);
-    const candidate = { count, perBox: box.blisters, gtin: box.gtin, leftover: count * box.blisters - applications };
+    const candidate = {
+      count,
+      perBox: box.blisters,
+      gtin: box.gtin,
+      leftover: count * box.blisters - applications,
+      cost: isNum(box.price) && box.price >= 0 ? count * box.price : null,
+    };
     if (!best || candidate.leftover < best.leftover || (candidate.leftover === best.leftover && count < best.count)) best = candidate;
   }
   return best ? { kind: 'band', applications, ...best, packs: true } : { kind: 'band', applications, packs: null };
@@ -374,7 +380,10 @@ export function normalizeFormat(raw = {}) {
 
 export function normalizeDrug(raw = {}) {
   return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : newId(),
     name: typeof raw.name === 'string' ? raw.name : '',
+    family: typeof raw.family === 'string' && raw.family.trim() ? raw.family.trim().slice(0, 40) : undefined,
+    validated: typeof raw.validated === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.validated) ? raw.validated : undefined,
     species: raw.species === 'CN' || raw.species === 'CT' ? raw.species : undefined,
     min: optNum(raw.min),
     max: isNum(raw.max) ? raw.max : undefined,
@@ -679,6 +688,16 @@ export function suggestedPosology(product, species) {
   return { min, max: max ?? undefined, perDay, basis: basis === 'day' ? 'day' : 'intake', species: only };
 }
 
+// Adresse de la fiche Med'Vet d'un produit.
+export const productLink = (product) => (product.l ? (product.l.startsWith('https://') ? product.l : LINK_PREFIX + product.l) : undefined);
+
+// Une association de plusieurs substances que l'appli ne sait pas calculer (NexGard Spectra, Milbemax, Drontal,
+// Bravecto, Credelio Plus...) : le plus souvent un comprimé par tranche de poids, pas une dose en mg/kg. Elle n'est
+// pas proposée à l'ajout. Seule l'association amoxicilline + acide clavulanique est gérée (substanceOf).
+export function isUnhandledCombo(product) {
+  return routeOf(product) === 'oral' && product.a.length > 1 && substanceOf(product) === null;
+}
+
 export function drugFromProduct(product, pack, species) {
   const substance = substanceOf(product);
   const suggestion = routeOf(product) === 'spot' ? undefined : suggestedPosology(product, species);
@@ -686,7 +705,7 @@ export function drugFromProduct(product, pack, species) {
     name: substance ? substance.label : product.b,
     substance: substance?.label,
     route: routeOf(product),
-    link: product.l ? (product.l.startsWith('https://') ? product.l : LINK_PREFIX + product.l) : undefined,
+    link: productLink(product),
     formats: routeOf(product) === 'spot' ? [] : [formatFromProduct(product, pack)],
     ...(suggestion ? { ...suggestion, suggested: true } : {}),
   });
@@ -707,4 +726,148 @@ export function rcpTexts(entry, species) {
   if (species === 'CT') return cat ? [{ species: 'CT', text: cat }] : [];
   if (dog && cat && dog === cat) return [{ species: null, text: dog }];
   return [dog && { species: 'CN', text: dog }, cat && { species: 'CT', text: cat }].filter(Boolean);
+}
+
+// --- ordonnance du patient : statut, phrases, alertes, total, protocoles, prix ---------------------
+
+// Identifiant stable d'un médicament ou d'un protocole (un protocole retrouve ses médicaments par identifiant).
+export function newId() {
+  return globalThis.crypto?.randomUUID?.() ?? `i${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Statut de la posologie d'un médicament :
+ * 'missing' (dose ou rythme manquant), 'suggested' (proposée par Med'Vet, personne ne l'a confirmée),
+ * 'validated' (saisie ou confirmée par la clinique), 'band' (spot-on : article choisi selon le poids, sans dose).
+ */
+export function posologyStatus(drug) {
+  if (drug.route === 'spot') return 'band';
+  if (!ready(drug)) return 'missing';
+  return drug.suggested ? 'suggested' : 'validated';
+}
+
+// 1,5 -> « 1 comprimé et demi », 0,5 -> « un demi-comprimé », 0,25 -> « un quart de comprimé »
+export function tabletPhrase(tablets, word = 'comprimé') {
+  const whole = Math.floor(tablets + EPS);
+  const fraction = Math.round((tablets - whole) * 100) / 100;
+  const part = { 0.25: 'quart', 0.5: 'demi', 0.75: 'trois quarts' }[fraction];
+  const wholeText = `${whole} ${word}${whole > 1 ? 's' : ''}`;
+  if (!part) return wholeText;
+  if (!whole) return part === 'demi' ? `un demi-${word}` : `${part === 'quart' ? 'un quart' : part} de ${word}`;
+  return `${wholeText} et ${part}`;
+}
+
+export const frequencyText = (perDay) => (perDay === 2 ? 'matin et soir' : `${perDay} fois par jour`);
+
+/**
+ * La phrase à dire au client : « 5 comprimés, matin et soir, pendant 7 jours ».
+ * o : l'option choisie par plan() ou planBand() ; days : durée du traitement (ou null).
+ */
+export function intakeSentence(o, drug, days) {
+  const f = o.format;
+  if (isBand(f)) {
+    const n = o.supply?.applications ?? null;
+    if (!(drug.interval > 0) || (n !== null && n <= 1)) return '1 pipette';
+    return `1 pipette tous les ${drug.interval} jours${n ? `, ${n} applications` : ''}`;
+  }
+  const quantity = isLiquid(f) ? mlText(o.amount) : tabletPhrase(o.tablets, f.unit === 'gél.' ? 'gélule' : 'comprimé');
+  return [
+    f.route === 'inj' ? `${quantity} par injection` : quantity,
+    frequencyText(drug.perDay),
+    days ? `pendant ${pluralize(days, 'jour')}` : '',
+  ].filter(Boolean).join(', ');
+}
+
+/**
+ * Ce qu'il faut remettre, en trois morceaux pour l'affichage : { count, unit, detail }
+ * (7, « plaquettes », « de 10 comprimés »). null tant que la durée manque.
+ */
+export function supplyParts(o) {
+  const s = o.supply;
+  const f = o.format;
+  if (!s) return null;
+  const word = f.unit === 'gél.' ? 'gélule' : 'comprimé';
+  if (!s.packs) {
+    if (isLiquid(f)) return { count: String(s.total).replace('.', ','), unit: 'mL', detail: '' };
+    const n = s.totalQuarters / 4;
+    return { count: tabletText(n), unit: n > 1 ? `${word}s` : word, detail: '' };
+  }
+  if (s.kind === 'band') return { count: s.count, unit: s.count > 1 ? 'boîtes' : 'boîte', detail: `de ${pluralize(s.perBox, 'pipette')}` };
+  if (s.kind === 'liquid') {
+    const container = s.container ?? 'flacon';
+    if (s.unit === 'box') {
+      return { count: s.count, unit: s.count > 1 ? 'boîtes' : 'boîte', detail: `de ${s.bottles > 1 ? `${s.bottles} ${container}s` : `un ${container}`} de ${mlText(s.bottle)}` };
+    }
+    return { count: s.count, unit: s.count > 1 ? `${container}s` : container, detail: `de ${mlText(s.bottle)}` };
+  }
+  if (s.unit === 'box') return { count: s.count, unit: s.count > 1 ? 'boîtes' : 'boîte', detail: `de ${pluralize(s.perBox, word)}` };
+  if (s.unit === 'blister') return { count: s.count, unit: s.count > 1 ? 'plaquettes' : 'plaquette', detail: `de ${pluralize(s.perBlister, word)}` };
+  return { count: s.count, unit: s.count > 1 ? `${word}s` : word, detail: '' };
+}
+
+export function supplyPhrase(o) {
+  const p = supplyParts(o);
+  return p ? [p.count, p.unit, p.detail].filter((x) => x !== '').join(' ') : '';
+}
+
+/**
+ * Alertes entre les médicaments d'une même ordonnance : même substance, ou même classe (saisie par la clinique,
+ * « AINS », « Antibiotique »...). Renvoie Map(médicament -> messages).
+ */
+export function orderWarnings(drugs) {
+  const out = new Map(drugs.map((d) => [d, []]));
+  const sameSubstance = (a, b) => a.substance && b.substance && substanceKey(a.substance) === substanceKey(b.substance);
+  const sameFamily = (a, b) => a.family && b.family && fold(a.family) === fold(b.family);
+  const names = (list) => list.map((d) => d.name || 'Sans nom').join(', ');
+  for (const d of drugs) {
+    const twins = drugs.filter((x) => x !== d && sameSubstance(d, x));
+    if (twins.length) out.get(d).push(`Même substance que ${names(twins)} : à vérifier.`);
+    const cousins = drugs.filter((x) => x !== d && sameFamily(d, x) && !sameSubstance(d, x));
+    if (cousins.length) out.get(d).push(`Même classe (${d.family}) que ${names(cousins)} : à vérifier l’association.`);
+  }
+  return out;
+}
+
+// Total de l'ordonnance : costs = coût de chaque ligne (nombre) ou null quand le prix manque.
+export function orderTotals(costs) {
+  const known = costs.filter(isNum);
+  return { total: known.length ? known.reduce((a, b) => a + b, 0) : null, priced: known.length, count: costs.length };
+}
+
+export function normalizeProtocol(raw = {}) {
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : newId(),
+    name: typeof raw.name === 'string' ? raw.name.trim().slice(0, 60) : '',
+    items: Array.isArray(raw.items)
+      ? raw.items.filter((i) => i && typeof i.drug === 'string' && i.drug).map((i) => ({ drug: i.drug, days: optInt(i.days) && i.days <= 365 ? i.days : null }))
+      : [],
+  };
+}
+
+// --- prix des boîtes : Med'Vet n'en donne pas, la clinique les saisit (par GTIN de la boîte) ---------
+
+export function normalizePrices(raw) {
+  const out = {};
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const [gtin, price] of Object.entries(raw)) if (/^\d{8,14}$/.test(gtin) && isNum(price) && price >= 0) out[gtin] = price;
+  }
+  return out;
+}
+
+// La boîte qui sert au calcul d'un article Med'Vet : la plus petite des boîtes regroupées.
+export function boxOf(format) {
+  const n = isBand(format) ? format.perBox : isLiquid(format) ? format.bottles : format.blisters;
+  const box = format.boxes?.find((b) => b.blisters === n) ?? format.boxes?.[0];
+  return { n, gtin: box?.gtin ?? format.gtin?.split(',')[0] };
+}
+
+// Les articles avec le prix saisi (par GTIN) : sans prix, l'article reste tel quel et son coût reste inconnu.
+export function withPrices(formats, prices) {
+  if (!prices || !Object.keys(prices).length) return formats;
+  return formats.map((f) => {
+    if (!f.boxes) return f;
+    if (isBand(f)) return { ...f, boxes: f.boxes.map((b) => (isNum(prices[b.gtin]) ? { ...b, price: prices[b.gtin] } : b)) };
+    const { gtin } = boxOf(f);
+    return isNum(prices[gtin]) ? { ...f, price: prices[gtin] } : f;
+  });
 }
