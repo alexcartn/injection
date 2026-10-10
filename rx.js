@@ -871,3 +871,116 @@ export function withPrices(formats, prices) {
     return isNum(prices[gtin]) ? { ...f, price: prices[gtin] } : f;
   });
 }
+
+// --- mise en forme du texte du RCP : aucun mot n'est changé, seulement la présentation ---------------------
+//
+// Le texte de medvet-poso.json est aplati : un « | » ferme chaque cellule de tableau, les listes commencent par
+// « - » ou « 1. », les paragraphes sont séparés par une ligne vide. parseRcp en tire des blocs à afficher :
+//   { type: 'p', lines }              un paragraphe (une ligne par entrée)
+//   { type: 'h', text }               un intertitre (« Chiens : »)
+//   { type: 'ul' | 'ol', items }      une liste ; chaque item est un tableau de lignes
+//   { type: 'table', rows, exact }    un tableau ; exact = toutes les lignes ont le même nombre de cellules, donc
+//                                     une grille fidèle. Sinon (cellules fusionnées perdues à l'aplatissement) les
+//                                     lignes sont gardées dans l'ordre du texte, sans colonnes à lire.
+// Les « * » et « ** » des notes de bas de tableau restent du texte : ce n'est pas du markdown.
+
+const RCP_BULLET = /^[-–•·]\s*(\S.*)$/;
+const RCP_ORDERED = /^\d{1,2}[.)]\s+(\S.*)$/;
+const RCP_END = /[.!?;)]$/; // fin de phrase : un item qui finit par « : » annonce la ligne suivante
+
+// Cellules d'une zone de tableau aplati. Chaque « | » ferme une cellule. Une cellule non vide qui commence en début
+// de ligne (le « | » d'avant finissait sa ligne) ouvre une nouvelle ligne de tableau ; une cellule vide reste dans
+// la ligne en cours.
+function flatRows(region) {
+  const segments = region.split('|');
+  const rows = [];
+  let row = [];
+  segments.forEach((segment, i) => {
+    const cell = segment.replace(/\s+/g, ' ').trim();
+    if (i === segments.length - 1 && !cell) return;
+    if (i > 0 && cell && /^[ \t]*\n/.test(segment)) {
+      rows.push(row);
+      row = [];
+    }
+    row.push(cell);
+  });
+  if (row.length) rows.push(row);
+  return rows;
+}
+
+function tableBlock(region) {
+  const rows = flatRows(region.join('\n'));
+  const width = rows[0]?.length ?? 0;
+  return { type: 'table', rows, exact: rows.length >= 2 && width >= 2 && rows.every((r) => r.length === width) };
+}
+
+// Texte sans tableau : paragraphes, intertitres, listes à puces ou numérotées.
+function proseBlocks(lines, whole) {
+  const out = [];
+  let para = null;
+  let list = null;
+  for (const [i, line] of lines.entries()) {
+    // première ligne courte et sans ponctuation, juste avant un intertitre ou une liste : un intertitre aussi
+    if (whole && i === 0 && lines.length > 1 && line.length <= 60 && /^\p{Lu}/u.test(line) && !/[.,;:!?)]$/.test(line)
+      && (lines[1].endsWith(':') || RCP_BULLET.test(lines[1]))) {
+      out.push({ type: 'h', text: line });
+      continue;
+    }
+    const bullet = RCP_BULLET.exec(line);
+    const ordered = bullet ? null : RCP_ORDERED.exec(line);
+    if (bullet || ordered) {
+      const type = bullet ? 'ul' : 'ol';
+      if (!list || list.type !== type) {
+        list = { type, items: [] };
+        out.push(list);
+      }
+      list.items.push([(bullet ?? ordered)[1]]);
+      para = null;
+      continue;
+    }
+    // une ligne qui prolonge l'item d'avant : minuscule, ou item sans ponctuation finale
+    const last = list?.items.at(-1)?.at(-1);
+    if (list && (/^\p{Ll}/u.test(line) || !RCP_END.test(last))) {
+      list.items.at(-1).push(line);
+      continue;
+    }
+    list = null;
+    if (line.length <= 80 && line.endsWith(':')) {
+      out.push({ type: 'h', text: line });
+      para = null;
+      continue;
+    }
+    if (!para) {
+      para = { type: 'p', lines: [] };
+      out.push(para);
+    }
+    para.lines.push(line);
+  }
+  // une seule ligne courte, sans ponctuation, dans son propre paragraphe : un intertitre (« Posologie recommandée »)
+  if (whole && out.length === 1 && out[0].type === 'p' && out[0].lines.length === 1) {
+    const [only] = out[0].lines;
+    if (only.length <= 50 && /^\p{Lu}/u.test(only) && !/[.,;:!?)]$/.test(only)) return [{ type: 'h', text: only }];
+  }
+  return out;
+}
+
+function paragraphBlocks(lines) {
+  const pipes = lines.flatMap((l, i) => (l.includes('|') ? [i] : []));
+  if (!pipes.length) return proseBlocks(lines, true);
+  const first = pipes[0];
+  const last = pipes.at(-1);
+  let start = first;
+  // le texte de la première cellule est sur la ligne d'avant, quand c'est une ligne courte qui n'a rien d'une phrase
+  if (lines[first].startsWith('|') && first > 0 && lines[first - 1].length <= 60 && !/[.;:]$/.test(lines[first - 1])) start = first - 1;
+  const region = lines.slice(start, last + 1);
+  if (region.join('\n').split('|').length - 1 < 2) return proseBlocks(lines.map((l) => l.replace(/\s*\|\s*$/, '').replace(/\s*\|\s*/g, ' ')), true);
+  return [...proseBlocks(lines.slice(0, start), true), tableBlock(region), ...proseBlocks(lines.slice(last + 1), true)];
+}
+
+export function parseRcp(text) {
+  return String(text ?? '')
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.split('\n').map((l) => l.trim()).filter(Boolean))
+    .filter((lines) => lines.length)
+    .flatMap(paragraphBlocks);
+}

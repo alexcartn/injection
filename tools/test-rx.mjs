@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import {
   plan, planBand, normalizeDrug, normalizeProtocol, normalizePrices, posologyStatus, tabletPhrase, intakeSentence,
   supplyParts, supplyPhrase, orderWarnings, orderTotals, withPrices, boxOf, isUnhandledCombo, marketFormats, routeOf,
-  frequencyText, DEFAULT_PREFS,
+  frequencyText, DEFAULT_PREFS, parseRcp,
 } from '../rx.js';
 
 let count = 0;
@@ -154,6 +154,65 @@ test('produits calculables jamais refusés', () => {
   assert.ok(amox.length > 0);
   for (const p of amox.filter((x) => x.m != null)) assert.equal(isUnhandledCombo(p), false, p.d);
   assert.equal(index.p.filter((p) => routeOf(p) !== 'oral').some(isUnhandledCombo), false);
+});
+
+// --- texte du RCP : mise en forme sans rien changer au texte ------------------------------------
+
+test('RCP : intertitres, puces et suite d’un item', () => {
+  const blocks = parseRcp('Posologie recommandée\nChiens :\n- Plaies : 11 mg par kg pendant 7 à 10 jours.\nLe traitement ne sera pas poursuivi.\n\n-Ostéomyélites :\n11 mg de clindamycine par kg.\n\n1. Premier\n2) Second\n\n5,5 mg/kg par prise');
+  assert.deepEqual(blocks.map((b) => b.type), ['h', 'h', 'ul', 'p', 'ul', 'ol', 'p']);
+  assert.equal(blocks[0].text, 'Posologie recommandée');
+  assert.equal(blocks[1].text, 'Chiens :');
+  assert.deepEqual(blocks[2].items, [['Plaies : 11 mg par kg pendant 7 à 10 jours.']]);
+  assert.deepEqual(blocks[3].lines, ['Le traitement ne sera pas poursuivi.']);
+  assert.deepEqual(blocks[4].items, [['Ostéomyélites :', '11 mg de clindamycine par kg.']]); // la ligne après « : » reste dans l’item
+  assert.deepEqual(blocks[5].items, [['Premier'], ['Second']]);
+  assert.deepEqual(blocks[6].lines, ['5,5 mg/kg par prise']); // un nombre en début de ligne n’est pas une liste
+});
+
+test('RCP : tableau « une ligne par ligne » et tableau « une cellule par ligne »', () => {
+  const a = parseRcp('Posologie | Volume par kg |\n5,5 mg/kg | 0,25 ml |\n11 mg/kg | 0,5 ml |\nPour assurer une posologie correcte.');
+  assert.deepEqual(a.map((b) => b.type), ['table', 'p']);
+  assert.equal(a[0].exact, true);
+  assert.deepEqual(a[0].rows, [['Posologie', 'Volume par kg'], ['5,5 mg/kg', '0,25 ml'], ['11 mg/kg', '0,5 ml']]);
+  const b = parseRcp('Poids (kg)\n| Nombre de comprimés de ZITAC 100 mg\n|\n6 à 10\n| ½\n|\n11 à 20\n| 1\n|');
+  assert.equal(b.length, 1);
+  assert.equal(b[0].exact, true);
+  assert.deepEqual(b[0].rows, [['Poids (kg)', 'Nombre de comprimés de ZITAC 100 mg'], ['6 à 10', '½'], ['11 à 20', '1']]);
+});
+
+test('RCP : cellule vide gardée à sa place, tableau irrégulier jamais présenté comme une grille', () => {
+  const [full] = parseRcp('Poids\n| 4,8 mg\n| 6,4 mg\n|\n3 - 4\n| 0,5\n|\n|\n4 - 5\n|\n| 0,5\n|');
+  assert.equal(full.exact, true);
+  assert.deepEqual(full.rows, [['Poids', '4,8 mg', '6,4 mg'], ['3 - 4', '0,5', ''], ['4 - 5', '', '0,5']]); // la valeur reste dans sa colonne
+  const [ragged] = parseRcp('Poids du chien\n| Comprimés\n| Nombre\n|\n3 à 7,5 kg\n| Comprimé de 1,875 mg\n| 1 comprimé\n|\n7,5 à 15 kg\n| Comprimé de 3,75 mg\n|');
+  assert.equal(ragged.type, 'table');
+  assert.equal(ragged.exact, false); // lignes de 3, 3 et 2 cellules : colonnes non fiables
+  assert.equal(ragged.rows.length, 3);
+});
+
+test('RCP : les * des notes ne sont pas du markdown, un « | » seul disparaît', () => {
+  const blocks = parseRcp('** sur la base d’une dose de 25 µg/kg\n\nAttendre 15 minutes avant d’administrer la kétamine par injection |');
+  assert.deepEqual(blocks[0].lines, ['** sur la base d’une dose de 25 µg/kg']);
+  assert.deepEqual(blocks[1].lines, ['Attendre 15 minutes avant d’administrer la kétamine par injection']);
+  assert.deepEqual(parseRcp(''), []);
+  assert.deepEqual(parseRcp(null), []);
+});
+
+test('RCP : aucun mot perdu ni ajouté sur les 711 fiches', () => {
+  const poso = JSON.parse(fs.readFileSync(new URL('../medvet-poso.json', import.meta.url), 'utf8')).p;
+  const texts = Object.values(poso).flat().filter((x) => typeof x === 'string');
+  assert.ok(texts.length > 700);
+  const words = (s) => s.split(/\s+/).filter((w) => w && w !== '|');
+  const marker = (l) => l.replace(/^\s*[-–•·]\s*/, '').replace(/^\s*\d{1,2}[.)]\s+/, '');
+  for (const text of texts) {
+    const out = parseRcp(text).flatMap((b) => (b.type === 'p' ? b.lines.flatMap(words)
+      : b.type === 'h' ? words(b.text)
+        : b.type === 'table' ? b.rows.flat().flatMap(words)
+          : b.items.flat().flatMap(words)));
+    const orig = text.split('\n').map(marker).flatMap(words);
+    assert.equal(out.sort().join('\u0001'), orig.sort().join('\u0001'), text.slice(0, 80));
+  }
 });
 
 console.log(process.exitCode ? 'Des tests échouent.' : `${count} tests rx.js : OK`);

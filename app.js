@@ -7,7 +7,7 @@ import {
   substanceOf, listSubstances, brandsOf, marketFormats, formatPackText, gtinCodes, isLiquid, isBand, routeOf, planBand, SYRINGES,
   suggestedPosology, posoKey, rcpTexts,
   posologyStatus, intakeSentence, supplyParts, supplyPhrase, orderWarnings, orderTotals, normalizeProtocol,
-  normalizePrices, boxOf, withPrices, isUnhandledCombo, productLink,
+  normalizePrices, boxOf, withPrices, isUnhandledCombo, productLink, parseRcp,
 } from './rx.js';
 
 const STORE_KEY = 'injection:sections:v1';
@@ -1280,13 +1280,52 @@ function rcpTarget(drug, article) {
   return { link, label: f?.name ?? drug.name, species: state.species !== 'all' ? state.species : drug.species };
 }
 
+// Une cellule vide d'un tableau est écrite « – » à l'écran : sa place compte (colonne d'un dosage).
+const rcpLines = (lines) => lines.flatMap((line, i) => (i ? [el('br'), line] : [line]));
+
+function rcpBlockNode(block) {
+  if (block.type === 'p') return el('p', { class: 'rx-rcp-p' }, rcpLines(block.lines));
+  if (block.type === 'h') return el('h4', { class: 'rx-rcp-h' }, block.text);
+  if (block.type === 'ul' || block.type === 'ol') {
+    return el(block.type, { class: 'rx-rcp-list' }, block.items.map((lines) => el('li', {}, rcpLines(lines))));
+  }
+  if (block.exact) {
+    const [head, ...body] = block.rows;
+    return el('div', { class: 'rx-rcp-tablewrap', tabindex: '0', role: 'region', 'aria-label': 'Tableau de la fiche' },
+      el('table', { class: 'rx-rcp-table' },
+        el('thead', {}, el('tr', {}, head.map((cell) => el('th', { scope: 'col' }, cell)))),
+        el('tbody', {}, body.map((row) => el('tr', {}, row.map((cell) => el('td', {}, cell || '–'))))),
+      ));
+  }
+  // cellules fusionnées perdues à l'aplatissement : les lignes sont gardées dans l'ordre du texte, sans colonnes
+  return el('div', { class: 'rx-rcp-rows' },
+    el('p', { class: 'rx-hint' }, 'Tableau de la fiche : colonnes non reconstituables, lignes dans l’ordre du texte. À lire sur la fiche Med’Vet.'),
+    block.rows.map((row) => el('p', { class: 'rx-rcp-row' }, row.map((cell) => el('span', { class: 'rx-rcp-cell' }, cell || '–')))),
+  );
+}
+
+// Le texte d'une fiche mis en forme (paragraphes, listes, tableaux), ou tel quel avec le bouton « Texte brut ».
+function rcpView(text, label) {
+  const formatted = el('div', { class: 'rx-rcp-text', tabindex: '0', role: 'region', 'aria-label': label }, parseRcp(text).map(rcpBlockNode));
+  const raw = el('div', { class: 'rx-rcp-text rx-rcp-raw', tabindex: '0', role: 'region', 'aria-label': `${label} (texte brut)`, hidden: true }, text);
+  const toggle = el('button', { type: 'button', class: 'btn btn-ghost btn-small', 'aria-pressed': 'false' }, 'Voir le texte brut');
+  toggle.addEventListener('click', () => {
+    const showRaw = raw.hidden;
+    raw.hidden = !showRaw;
+    formatted.hidden = showRaw;
+    toggle.setAttribute('aria-pressed', String(showRaw));
+    toggle.textContent = showRaw ? 'Voir la mise en forme' : 'Voir le texte brut';
+  });
+  return [formatted, raw, toggle];
+}
+
 function rcpContent(target, entry) {
   const texts = rcpTexts(entry, target.species);
   const who = SPECIES_LABEL[target.species]?.toLowerCase();
   const nodes = texts.length
     ? texts.map(({ species, text }) => el('div', { class: 'rx-rcp-block' },
       species && texts.length > 1 && el('h3', { class: 'rx-rcp-sp' }, SPECIES_LABEL[species]),
-      el('div', { class: 'rx-rcp-text', tabindex: '0', role: 'region', 'aria-label': `Posologie du RCP${species ? ` : ${SPECIES_LABEL[species].toLowerCase()}` : ''}` }, text),
+      rcpView(text, `Posologie du RCP${species ? ` : ${SPECIES_LABEL[species].toLowerCase()}` : ''}`),
     ))
     : [el('p', { class: 'rx-hint' }, `La fiche Med’Vet ne donne pas de posologie${who ? ` pour ${who}` : ''}.`)];
   return [
