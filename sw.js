@@ -1,6 +1,6 @@
 // Service worker : l'appli fonctionne hors connexion.
 // Incrémenter CACHE à chaque déploiement pour forcer la mise à jour des fichiers.
-const CACHE = 'injection-v27';
+const CACHE = 'injection-v28';
 
 // Les animations de l'easter egg vivent dans un cache à part : elles ne changent pas, donc
 // elles ne sont pas retéléchargées à chaque nouvelle version de l'appli.
@@ -56,7 +56,9 @@ async function precacheEgg() {
 self.addEventListener('install', (event) => {
   event.waitUntil(
     Promise.all([
-      caches.open(CACHE).then((cache) => cache.addAll(ASSETS)),
+      // 'reload' : jamais depuis le cache HTTP du navigateur (GitHub Pages en garde dix minutes), sinon une version
+      // neuve pourrait être installée avec des fichiers de l'ancienne et ne plus démarrer
+      caches.open(CACHE).then((cache) => cache.addAll(ASSETS.map((url) => new Request(url, { cache: 'reload' })))),
       // l'easter egg ne doit jamais empêcher l'installation de l'appli
       precacheEgg().catch(() => {}),
     ]).then(() => self.skipWaiting()),
@@ -80,7 +82,8 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith(
     caches.match(request, { ignoreSearch: true }).then((cached) => {
-      const refresh = fetch(request)
+      // 'no-cache' : le serveur confirme que le fichier n'a pas changé (une requête légère), pas de copie périmée
+      const refresh = fetch(request, { cache: 'no-cache' })
         .then((response) => {
           if (response.ok) {
             const copy = response.clone();

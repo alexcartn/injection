@@ -2835,6 +2835,34 @@ function render() {
 render();
 if (matchMedia('(pointer: fine)').matches) weightInput.focus();
 
+// --- mise à jour : le service worker sert d'abord ce qu'il a en cache. Quand une nouvelle version s'active, ---
+// --- un bandeau propose de recharger (jamais de rechargement d'office : le poids et l'ordonnance en cours seraient perdus) ---
+
+function showUpdateBanner() {
+  if (document.getElementById('update')) return;
+  const banner = el('div', { class: 'update', id: 'update', role: 'status' },
+    el('p', {}, el('span', { class: 'update-title' }, 'Nouvelle version disponible.'), ' Recharger efface le poids, l’ordonnance et l’évaluation en cours.'),
+    el('div', { class: 'update-actions' },
+      button('Recharger', () => location.reload(), 'btn-primary btn-small'),
+      button('Plus tard', () => banner.remove(), 'btn-small'),
+    ),
+  );
+  document.body.append(banner);
+}
+
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  // la toute première installation n'est pas une « nouvelle version » : seul un service worker déjà en place compte
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) showUpdateBanner(); });
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js')
+      .then((registration) => {
+        // une appli laissée ouverte (écran d'accueil du téléphone) ne recharge jamais la page : on cherche une
+        // nouvelle version à chaque retour dans l'appli
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') registration.update().catch(() => {});
+        });
+      })
+      .catch(() => {});
+  });
 }

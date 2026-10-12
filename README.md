@@ -147,4 +147,6 @@ Une fois chargée, l'appli fonctionne hors connexion.
 
 ## Mettre à jour l'appli
 
-Après une modification de code, incrémenter `CACHE` dans `sw.js` (`injection-v2`, ...) pour que les appareils récupèrent les nouveaux fichiers.
+Après une modification de code, incrémenter `CACHE` dans `sw.js` (`injection-v2`, ...) pour que les appareils récupèrent les nouveaux fichiers. Tout nouveau fichier de code doit aussi être ajouté à `ASSETS` dans `sw.js` (sinon il n'est pas disponible hors connexion).
+
+Côté appareil : l'appli sert d'abord ce qu'elle a en cache, puis se met à jour en arrière-plan. Quand une nouvelle version est installée, un bandeau « Nouvelle version disponible » apparaît en bas de l'écran avec « Recharger » et « Plus tard ». L'appli ne recharge jamais d'elle-même : le poids, l'ordonnance et l'évaluation de douleur en cours ne sont pas mémorisés et seraient perdus (le bandeau le dit). Il n'apparaît pas à la toute première installation. Une appli laissée ouverte (écran d'accueil du téléphone) cherche une nouvelle version à chaque retour au premier plan. L'installation ne lit jamais le cache HTTP du navigateur (GitHub Pages le garde dix minutes), pour ne pas mélanger des fichiers d'anciennes et de nouvelles versions.

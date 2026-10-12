@@ -2218,5 +2218,27 @@ html:has(body[data-view="pain"]) { scroll-padding-bottom: 9rem; }
   .pain-chart .bar.tone-ok, .pain-chart .bar.tone-info { fill: #555; }
 }
 
+/* bandeau « nouvelle version disponible » : au-dessus de la barre du bas, jamais bloquant */
+.update {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2) var(--s-4);
+  padding: var(--s-3) max(var(--s-4), env(safe-area-inset-right)) calc(var(--s-3) + env(safe-area-inset-bottom)) max(var(--s-4), env(safe-area-inset-left));
+  border-top: 3px solid var(--accent);
+  background: var(--panel);
+  color: var(--on-panel);
+}
+.update p { flex: 1 1 18rem; margin: 0; }
+.update-title { font-weight: 700; }
+.update-actions { display: flex; gap: var(--s-2); }
+.update .btn { border-color: var(--on-panel); color: var(--on-panel); }
+.update .btn-primary { background: var(--on-panel); color: var(--panel); }
+@media print { .update { display: none !important; } }
+
 /* panneau d'édition ouvert : la page derrière ne défile pas */
 body:has(dialog[open]) { overflow: hidden; }
