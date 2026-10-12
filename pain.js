@@ -4,12 +4,14 @@
 // Étapes selon l'espèce :
 //   chien  sédation, puis douleur (4AVet)
 //   chat   faciès (Feline Grimace Scale), puis douleur (4AVet)
+//   lapin  faciès (Rabbit Grimace Scale)
 //
 // Chaque grille (scale) :
 //   id, title, short  nom complet et nom court
 //   items             { id, label, hint?, levels: [{ value, label? }], abbr? } ; abbr = item gardé dans la version abrégée
 //   compact           niveaux affichés côte à côte (libellés courts ou absents)
 //   source            d'où viennent les items et les libellés
+//   advice, link      conseil d'usage affiché sous le titre de l'étape, et lien vers la fiche de référence (optionnel)
 // Un niveau sans label n'affiche que son chiffre. Les libellés des niveaux de 4AVet ne sont pas repris ici :
 // la grille d'origine n'a pas pu être consultée. Les compléter dans A4V ci-dessous.
 
@@ -33,6 +35,28 @@ export const FGS = {
     { id: 'whiskers', label: 'Position des moustaches', hint: 'Projetées vers l’avant, écartées du visage, dressées.' },
     { id: 'head', label: 'Position de la tête', hint: 'Sous la ligne des épaules, ou inclinée vers le bas.' },
   ].map((item) => ({ ...item, levels: FGS_LEVELS })),
+};
+
+const RGS_LEVELS = [lv(0, 'Absent'), lv(1, 'Modéré'), lv(2, 'Évident')];
+
+// Les définitions illustrées de chaque item ne sont que sur l'affiche du NC3Rs : seuls les noms des items sont repris ici.
+export const RGS = {
+  id: 'rgs',
+  title: 'Faciès du lapin (Rabbit Grimace Scale)',
+  short: 'Grimace',
+  compact: true,
+  naAllowed: true,
+  minScored: 3, // choix de l'appli : en dessous, pas de verdict
+  source: 'Keating et coll., PLoS One 2012 (5 items de 0 à 2, pas de seuil d’analgésie publié) ; affiche et conseils d’usage du NC3Rs.',
+  advice: 'À scorer sur un animal éveillé, après une courte observation, pour ne pas noter une expression passagère. Pas de seuil d’analgésie publié : le score se lit avec l’examen clinique.',
+  link: { url: 'https://nc3rs.org.uk/rabbit-grimace-scale', text: 'Affiche NC3Rs avec les images de chaque item' },
+  items: [
+    { id: 'orbit', label: 'Plissement orbitaire' },
+    { id: 'cheek', label: 'Aplatissement des joues' },
+    { id: 'nose', label: 'Forme du nez' },
+    { id: 'whiskers', label: 'Position des moustaches' },
+    { id: 'ears', label: 'Forme et position des oreilles' },
+  ].map((item) => ({ ...item, levels: RGS_LEVELS })),
 };
 
 export const SEDATION = {
@@ -78,6 +102,7 @@ export const A4V = {
   title: 'Douleur aiguë (4AVet)',
   short: 'Douleur',
   compact: true,
+  advice: 'Chaque item va de 0 (aucune douleur) à 3 (douleur maximale). Le détail de chaque niveau n’est pas repris ici.',
   source: 'Items : Rialland et coll., PLoS One 2012 (6 items de 0 à 3). Classes d’intensité : Le Point Vétérinaire n° 330, 2012. Aucun seuil d’analgésie validé pour cette grille (WSAVA).',
   bands: [
     { to: 0, text: 'Pas de douleur', tone: 'ok' },
@@ -95,8 +120,9 @@ export const A4V = {
   ].map((item) => ({ ...item, levels: A4V_LEVELS })),
 };
 
-export const SCALES = { fgs: FGS, sed: SEDATION, a4v: A4V };
-export const FLOWS = { CN: ['sed', 'a4v'], CT: ['fgs', 'a4v'] };
+export const SCALES = { fgs: FGS, rgs: RGS, sed: SEDATION, a4v: A4V };
+export const FLOWS = { CN: ['sed', 'a4v'], CT: ['fgs', 'a4v'], LP: ['rgs'] };
+export const PAIN_SPECIES = { CN: 'Chien', CT: 'Chat', LP: 'Lapin' };
 
 export const NA = 'na';
 
@@ -141,6 +167,7 @@ export function readScore(scale, score) {
     const band = scale.bands.find((b) => score.sum <= b.to);
     return { text: band.text, tone: band.tone, alert: band.tone === 'alert' };
   }
+  if (scale.id === 'rgs') return { text: 'Pas de seuil d’analgésie validé', tone: 'info', alert: false };
   return { text: 'Plus la sédation est marquée, moins l’expression de la douleur est fiable', tone: 'info', alert: false };
 }
 

@@ -10,7 +10,7 @@ import {
   normalizePrices, boxOf, withPrices, isUnhandledCombo, productLink, parseRcp,
 } from './rx.js';
 import {
-  SCALES, FLOWS, NA, activeItems, maxOf, scoreScale, readScore, buildEntry, pruneHistory, HISTORY_DAYS,
+  SCALES, FLOWS, PAIN_SPECIES, NA, activeItems, maxOf, scoreScale, readScore, buildEntry, pruneHistory, HISTORY_DAYS,
 } from './pain.js';
 
 const STORE_KEY = 'injection:sections:v1';
@@ -195,6 +195,7 @@ const state = {
     order: [], // l'ordonnance du patient en cours : { drug, days } (days vide = durée par défaut), jamais mémorisée
   },
   pain: {
+    species: null, // 'CN', 'CT' ou 'LP' (lapin) ; vide = celle du filtre du haut, si elle est choisie
     answers: {}, // { fgs: { ears: 1, ... }, sed: {...}, a4v: {...} } : l'évaluation en cours, jamais mémorisée
     full: false, // sédation : grille complète (7 items) au lieu de la version abrégée (4 items)
     lastSaved: null,
@@ -2342,7 +2343,7 @@ let painSaveBtn;
 let painSaveNote;
 let painPrintHead;
 
-const painSpecies = () => (state.species === 'CN' || state.species === 'CT' ? state.species : null);
+const painSpecies = () => state.pain.species ?? (state.species === 'CN' || state.species === 'CT' ? state.species : null);
 const fmtStamp = (t) => new Date(t).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 const fmtClock = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
@@ -2390,13 +2391,16 @@ function painStep(scale, index) {
       document.getElementById('pain-full')?.focus();
     });
     extra = el('label', { class: 'pain-opt' }, full, el('span', {}, 'Grille complète (7 items) au lieu de la version abrégée (4 items)'));
-  } else if (scale.id === 'a4v') {
-    extra = el('p', { class: 'pain-hint' }, 'Chaque item va de 0 (aucune douleur) à 3 (douleur maximale). Le détail de chaque niveau n’est pas repris ici.');
   }
+  const advice = scale.advice && el('p', { class: 'pain-hint' },
+    scale.advice,
+    scale.link && [' ', el('a', { href: scale.link.url, target: '_blank', rel: 'noopener' }, scale.link.text)],
+  );
 
   return el('section', { class: 'pain-step', 'aria-labelledby': `pain-h-${scale.id}` },
     el('h3', { class: 'rx-sub', id: `pain-h-${scale.id}` }, `${index + 1} · ${scale.title}`),
     extra,
+    advice,
     el('div', { class: 'pain-items' }, activeItems(scale, state.pain.full).map((item) => painItem(scale, item))),
     result,
   );
@@ -2421,18 +2425,28 @@ function renderPain() {
     el('p', { class: 'pph-who' }),
   );
 
+  // le lapin n'existe que dans cet onglet : le filtre du haut ne sert qu'aux doses, qui ne le concernent pas
+  const speciesSeg = el('fieldset', { class: 'seg pain-species' },
+    el('legend', { class: 'sr-only' }, 'Espèce de l’évaluation'),
+    Object.entries(PAIN_SPECIES).map(([value, label]) => {
+      const input = el('input', { type: 'radio', name: 'pain-species', value, checked: species === value });
+      input.addEventListener('change', () => {
+        state.pain.species = value;
+        state.pain.lastSaved = null;
+        renderPain();
+      });
+      return el('label', {}, input, el('span', {}, label));
+    }),
+  );
+
   const children = [
     painPrintHead,
-    el('div', { class: 'rx-top pain-top' }, field('Nom de l’animal', painNameInput, 'rx-patient')),
+    el('div', { class: 'rx-top pain-top' }, field('Nom de l’animal', painNameInput, 'rx-patient'), speciesSeg),
     el('p', { class: 'pain-lead' }, 'Scorer, agir, réévaluer : à l’admission, après un geste douloureux, à intervalles réguliers et avant la sortie.'),
   ];
 
   if (!species) {
-    const pick = (value) => document.querySelector(`input[name="species"][value="${value}"]`).click();
-    children.push(el('div', { class: 'pain-pick' },
-      el('p', {}, 'Les grilles diffèrent selon l’espèce. Chien ou chat ?'),
-      el('div', { class: 'pain-pick-btns' }, button('Chien', () => pick('CN'), 'btn-primary'), button('Chat', () => pick('CT'), 'btn-primary')),
-    ));
+    children.push(el('p', { class: 'pain-pick' }, 'Les grilles diffèrent selon l’espèce : choisissez Chien, Chat ou Lapin.'));
   } else {
     FLOWS[species].forEach((id, i) => children.push(painStep(SCALES[id], i)));
 
@@ -2510,8 +2524,8 @@ function painSources(species) {
   return el('details', { class: 'pain-src' },
     el('summary', {}, 'Sources et limites'),
     el('ul', {}, ids.map((id) => el('li', {}, el('span', { class: 'src-name' }, SCALES[id].title), ' : ', SCALES[id].source))),
-    el('p', {}, 'Un animal anxieux, sédaté ou porteur de comorbidités peut montrer moins ou plus de signes qu’il n’en ressent. Chez les brachycéphales, le faciès est plus difficile à interpréter.'),
-    species === 'CT' ? el('p', {}, 'Aucune grille de sédation n’est intégrée pour le chat : noter l’état de sédation à part, car il peut masquer la douleur.') : null,
+    el('p', {}, `Un animal anxieux, sédaté ou porteur de comorbidités peut montrer moins ou plus de signes qu’il n’en ressent.${species === 'LP' ? '' : ' Chez les brachycéphales, le faciès est plus difficile à interpréter.'}`),
+    species !== 'CN' ? el('p', {}, `Aucune grille de sédation n’est intégrée pour le ${PAIN_SPECIES[species].toLowerCase()} : noter l’état de sédation à part, car il peut masquer la douleur.`) : null,
     el('p', {}, `Les évaluations enregistrées restent sur cet appareil et sont effacées après ${HISTORY_DAYS} jours. Outil d’aide : le score ne remplace pas l’examen clinique.`),
   );
 }
@@ -2614,7 +2628,7 @@ function fillPainSheet() {
   const now = new Date();
   if (painPrintHead) {
     painPrintHead.querySelector('.pph-who').textContent =
-      `${state.petName || 'Patient'} · ${speciesText()} · ${now.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' })}`;
+      `${state.petName || 'Patient'} · ${PAIN_SPECIES[painSpecies()] ?? ''} · ${now.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' })}`;
   }
   const stamp = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
   document.title = `Douleur ${state.petName || 'patient'} ${stamp}`;
@@ -2660,6 +2674,7 @@ document.querySelectorAll('input[name="species"]').forEach((radio) => {
   radio.addEventListener('change', () => {
     state.species = radio.value;
     storeSet(SPECIES_KEY, state.species);
+    if (state.species !== 'all') state.pain.species = state.species;
     renderCurrent();
   });
 });

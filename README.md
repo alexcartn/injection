@@ -56,19 +56,20 @@ Onglet « Ordonnance » sous la barre du poids (le poids et le filtre Chien / Ch
 
 ## Douleur aiguë : évaluer et suivre
 
-Onglet « Douleur » : on choisit Chien ou Chat avec le filtre d'espèce du haut, on renseigne les items, les scores se calculent à chaque clic (sous chaque étape et dans la barre du bas). Le nom de l'animal est le même que celui des autres onglets.
+Onglet « Douleur » : on choisit Chien, Chat ou Lapin dans l'onglet (le filtre d'espèce du haut, s'il est sur Chien ou Chat, pré-sélectionne l'espèce ; le lapin n'existe que dans cet onglet, le filtre ne servant qu'aux doses), on renseigne les items, les scores se calculent à chaque clic (sous chaque étape et dans la barre du bas). Le nom de l'animal est le même que celui des autres onglets.
 
 - Chien : sédation, puis douleur (4AVet).
 - Chat : faciès (Feline Grimace Scale), puis douleur (4AVet). Aucune grille de sédation n'est intégrée pour le chat.
+- Lapin : Rabbit Grimace Scale seule (plissement orbitaire, aplatissement des joues, forme du nez, moustaches, oreilles ; 0, 1 ou 2 chacun, « non évaluable » possible, 3 items notés au minimum : choix de l'appli). Aucun seuil d'analgésie publié : l'appli affiche le score sans verdict. Les définitions illustrées de chaque item ne sont que sur l'affiche du NC3Rs, d'où le lien dans l'onglet : l'appli ne reprend que les noms des items. À scorer sur un animal éveillé, après une courte observation. Pas de grille de sédation pour le lapin.
 - Sédation : version abrégée (4 items, 0 à 12) par défaut, grille complète (7 items, 0 à 21) en cochant la case. Aucune classe d'interprétation n'est publiée : l'appli affiche le score seul, avec un rappel que la sédation masque la douleur.
 - Feline Grimace Scale : 5 items notés 0, 1 ou 2, chacun peut être « non évaluable » (le rapport se calcule alors sur les items notés, 3 au minimum : choix de l'appli). Seuil d'analgésie de secours à 0,39 sur 1 (Evangelista et coll., 2019), soit 4 sur 10 avec les 5 items.
 - 4AVet : 6 items notés de 0 à 3, total sur 18. Classes d'intensité : légère de 1 à 5, modérée de 6 à 10, sévère de 11 à 18. Aucun seuil d'analgésie validé pour cette grille : l'appli ne conseille rien, elle signale « Score élevé » à partir de modérée.
 - « Enregistrer l'évaluation » garde les scores (pas les items) dans le stockage de l'appareil, sous le nom de l'animal. Le suivi montre un histogramme par grille et la liste des évaluations. Les évaluations sont effacées après 14 jours, et le bouton « Effacer le suivi » les retire tout de suite. « Imprimer le suivi » sort une page avec les histogrammes et la liste.
 - Comme pour le poids, vider le poids = patient suivant : l'évaluation en cours et le nom sont effacés (le suivi enregistré reste).
 
-À compléter : le texte de chaque niveau de 4AVet (la grille d'origine n'a pas pu être consultée, seuls les noms des items et les extrémités « aucune douleur » et « douleur maximale » sont repris). Les items et libellés sont dans `pain.js` (objet `A4V`), séparés du reste du code : un libellé se renseigne dans `levels` d'un item sans toucher à l'affichage. Les scores sont calculés par des fonctions pures du même fichier.
+À compléter : le texte de chaque niveau de 4AVet (la grille d'origine n'a pas pu être consultée : seuls les noms des items et les extrémités « aucune douleur » et « douleur maximale » sont repris) et la définition de chaque item de la Rabbit Grimace Scale. Les items sont dans `pain.js`, séparés du reste du code : un libellé de niveau se renseigne dans `levels` d'un item de `A4V`, une définition d'item dans son `hint` (objet `RGS`), sans toucher à l'affichage. Les scores sont calculés par des fonctions pures du même fichier.
 
-Cet onglet n'est pas l'APS de CAPdouleur, dont la grille est réservée à ses adhérents : il s'appuie sur les grilles publiées citées dans « Sources et limites » en bas de l'onglet. Outil d'aide : le score ne remplace pas l'examen clinique.
+Cet onglet n'est ni l'APS ni le Dolorabbit de CAPdouleur, dont les grilles sont réservées à ses adhérents : il s'appuie sur les grilles publiées citées dans « Sources et limites » en bas de l'onglet. Outil d'aide : le score ne remplace pas l'examen clinique.
 
 ## Modifier les doses
 
@@ -117,7 +118,7 @@ Le SIMV a donné son accord pour les faits de catalogue, les GTIN, puis pour les
 - Polices : Atkinson Hyperlegible Next et Barlow Condensed, licence SIL OFL 1.1 (dossier `fonts/`).
 - Pictogrammes de section : Lucide, licence ISC (`icons/LICENSE-lucide.txt`).
 - Données produits de l'ordonnance : Med'Vet (SIMV), voir ci-dessus.
-- Grilles de douleur : Feline Grimace Scale (Evangelista et coll., Scientific Reports, 2019), grille de sédation de Grint et coll. d'après Young 1990 et Kuusela 2000 (reprise par Wagner et coll., BMC Veterinary Research, 2017), 4AVet (items d'après Rialland et coll., PLoS One, 2012 ; classes d'intensité d'après Le Point Vétérinaire n° 330, 2012).
+- Grilles de douleur : Feline Grimace Scale (Evangelista et coll., Scientific Reports, 2019), grille de sédation de Grint et coll. d'après Young 1990 et Kuusela 2000 (reprise par Wagner et coll., BMC Veterinary Research, 2017), Rabbit Grimace Scale (Keating et coll., PLoS One, 2012 ; affiche du NC3Rs), 4AVet (items d'après Rialland et coll., PLoS One, 2012 ; classes d'intensité d'après Le Point Vétérinaire n° 330, 2012).
 - Clin d'œil caché dans le pied de page (« Made with ♥ pour Dr Matz ») : un toucher sur le cœur fait apparaître un animal tiré au hasard, un second toucher le fait disparaître, et le suivant en montre un autre (jamais deux fois le même d'affilée). Animations Noto Emoji © Google, licence CC BY 4.0, réduites à 160 px et recompressées en WebP animé (`animals/`, détail dans `animals/LICENSE.txt`). Elles sont embarquées : rien n'est chargé depuis Internet, et ça marche hors connexion. Avec « réduire les animations » activé sur l'appareil, un émoji fixe remplace l'animation.
 
 ## Lancer en local

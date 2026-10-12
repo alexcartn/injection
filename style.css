@@ -2016,16 +2016,8 @@ body[data-view="pain"] > .prefs { display: none; }
 .pain-top { margin-bottom: var(--s-3); }
 .pain-lead { max-width: 44rem; margin: 0 0 var(--s-5); color: var(--ink-2); }
 
-.pain-pick {
-  max-width: 28rem;
-  padding: var(--s-4);
-  border: 1px solid var(--rule);
-  border-radius: var(--r);
-  background: var(--paper-2);
-}
-.pain-pick p { margin: 0 0 var(--s-3); font-weight: 650; }
-.pain-pick-btns { display: flex; gap: var(--s-3); }
-.pain-pick-btns .btn { flex: 1; min-height: 52px; }
+.pain-pick { margin: 0; font-weight: 650; }
+.pain-species { flex: 0 1 22rem; }
 
 .tone-ok { --tone: var(--accent); }
 .tone-info { --tone: var(--ink); }
@@ -2040,6 +2032,7 @@ body[data-view="pain"] > .prefs { display: none; }
 .pain-item { min-width: 0; margin: 0; padding: 0; border: 0; }
 .pain-item legend { padding: 0; margin-bottom: var(--s-2); font-weight: 700; }
 .pain-hint { margin: 0 0 var(--s-2); color: var(--ink-2); font-size: var(--t-xs); line-height: 1.4; }
+.pain-hint a { color: inherit; }
 .pain-opt { display: flex; align-items: center; gap: var(--s-3); min-height: 44px; margin-top: var(--s-2); cursor: pointer; }
 .pain-opt input { flex: none; width: 22px; height: 22px; accent-color: var(--ink); }
 
@@ -2153,7 +2146,6 @@ html:has(body[data-view="pain"]) { scroll-padding-bottom: 9rem; }
   body[data-view="pain"] main,
   body[data-view="pain"] .pain-top,
   body[data-view="pain"] .pain-lead,
-  body[data-view="pain"] .pain-pick,
   body[data-view="pain"] .pain-step,
   body[data-view="pain"] .pain-live,
   body[data-view="pain"] .pain-hist-actions,
