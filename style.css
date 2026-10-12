@@ -1107,17 +1107,22 @@ body:has(#weight:focus) .dock { display: none; }
 /* --- choix de la vue : injections ou ordonnance --------------------------------------- */
 
 .view-row { padding: var(--s-3) var(--gutter-r) 0 var(--gutter-l); }
-.seg-view { max-width: 22rem; }
+.seg-view { max-width: 32rem; }
 .seg-view span { min-height: 44px; }
 body.editing .view-row { display: none; }
 
-/* l'ordonnance n'a ni mode "Modifier" global, ni barre de sections, ni fiche à imprimer */
+/* l'ordonnance et la douleur n'ont ni mode "Modifier" global, ni barre de sections, ni fiche à imprimer */
 body[data-view="rx"] #edit-toggle,
 body[data-view="rx"] #hint,
 body[data-view="rx"] .dock,
-body[data-view="rx"] > .prefs { display: none; }
+body[data-view="rx"] > .prefs,
+body[data-view="pain"] #edit-toggle,
+body[data-view="pain"] #hint,
+body[data-view="pain"] .dock,
+body[data-view="pain"] > .prefs { display: none; }
 @media (max-width: 959px) {
-  body[data-view="rx"]:not(.editing) { padding-bottom: 0; }
+  body[data-view="rx"]:not(.editing),
+  body[data-view="pain"]:not(.editing) { padding-bottom: 0; }
 }
 
 /* --- ordonnance : quelle version remettre ---------------------------------------------- */
@@ -1998,6 +2003,169 @@ body[data-view="rx"] > .prefs { display: none; }
     font-size: 8.5pt;
     text-align: center;
   }
+}
+
+/* --- douleur aiguë : saisie par grille, score en direct, suivi ------------------------------- */
+
+.pain {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--s-5) max(var(--s-4), env(safe-area-inset-right)) var(--s-2) max(var(--s-4), env(safe-area-inset-left));
+}
+.pain[hidden] { display: none; }
+.pain-top { margin-bottom: var(--s-3); }
+.pain-lead { max-width: 44rem; margin: 0 0 var(--s-5); color: var(--ink-2); }
+
+.pain-pick {
+  max-width: 28rem;
+  padding: var(--s-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--paper-2);
+}
+.pain-pick p { margin: 0 0 var(--s-3); font-weight: 650; }
+.pain-pick-btns { display: flex; gap: var(--s-3); }
+.pain-pick-btns .btn { flex: 1; min-height: 52px; }
+
+.tone-ok { --tone: var(--accent); }
+.tone-info { --tone: var(--ink); }
+.tone-alert { --tone: var(--danger); }
+.tone-none { --tone: var(--ink-2); }
+
+.pain-step { margin-bottom: var(--s-6); }
+.pain-items { display: grid; gap: var(--s-5) var(--s-6); margin-top: var(--s-3); }
+@media (min-width: 900px) {
+  .pain-items { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.pain-item { min-width: 0; margin: 0; padding: 0; border: 0; }
+.pain-item legend { padding: 0; margin-bottom: var(--s-2); font-weight: 700; }
+.pain-hint { margin: 0 0 var(--s-2); color: var(--ink-2); font-size: var(--t-xs); line-height: 1.4; }
+.pain-opt { display: flex; align-items: center; gap: var(--s-3); min-height: 44px; margin-top: var(--s-2); cursor: pointer; }
+.pain-opt input { flex: none; width: 22px; height: 22px; accent-color: var(--ink); }
+
+/* un niveau = une ligne cliquable ; le chiffre est gros, le libellé suit */
+.lvs { display: grid; gap: var(--s-1); }
+.lv {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: 44px;
+  padding: var(--s-1) var(--s-3);
+  border: 2px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--paper);
+  cursor: pointer;
+}
+.lv input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.lv-n { flex: none; min-width: 1.2em; font: 700 var(--t-lg) / 1 var(--font-num); text-align: center; }
+.lv-t { color: var(--ink-2); line-height: 1.3; }
+.lv:has(input:checked) { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.lv:has(input:checked) .lv-t { color: inherit; }
+.lv:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* niveaux courts (faciès, 4AVet) : côte à côte */
+.pain-item.compact .lvs { grid-template-columns: repeat(auto-fit, minmax(5.2rem, 1fr)); }
+.pain-item.compact .lv { flex-direction: column; justify-content: center; gap: 2px; padding: var(--s-2); text-align: center; }
+.pain-item.compact .lv-t { font-size: var(--t-xs); }
+
+.pain-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-4);
+  margin: var(--s-4) 0 0;
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--rule);
+  color: var(--tone, var(--ink-2));
+}
+.pain-score { font: 700 var(--t-xl) / 1 var(--font-num); font-variant-numeric: tabular-nums; }
+.pain-read { font-weight: 650; }
+
+/* barre collée en bas : les scores restent sous les yeux pendant la saisie */
+.pain-live {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-6);
+  padding: var(--s-3) 0 calc(var(--s-3) + env(safe-area-inset-bottom));
+  border-top: 2px solid var(--rule-strong);
+  background: var(--paper);
+}
+.pl-parts { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-5); }
+.pl-part { display: inline-flex; align-items: baseline; gap: var(--s-2); color: var(--tone, var(--ink-2)); }
+.pl-name { font: 600 var(--t-sm) / 1 var(--font-num); letter-spacing: 0.06em; text-transform: uppercase; }
+.pl-val { font: 700 var(--t-lg) / 1 var(--font-num); font-variant-numeric: tabular-nums; }
+.pl-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
+.pain-note { color: var(--ink-2); font-size: var(--t-xs); }
+/* la barre du bas ne doit pas masquer l'item atteint au clavier */
+html:has(body[data-view="pain"]) { scroll-padding-bottom: 9rem; }
+.pain-live .btn:disabled { opacity: 0.4; cursor: default; }
+
+.pain-hist { margin-top: var(--s-6); }
+.pain-empty { margin: var(--s-3) 0; color: var(--ink-2); }
+.pain-charts { display: flex; flex-wrap: wrap; gap: var(--s-4) var(--s-6); margin: var(--s-3) 0; }
+.pain-fig { max-width: 100%; margin: 0; }
+.pain-fig figcaption {
+  margin-bottom: var(--s-1);
+  color: var(--ink-2);
+  font: 600 var(--t-sm) / 1 var(--font-num);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pain-chart-wrap { max-width: 100%; overflow-x: auto; }
+.pain-chart { display: block; }
+.pain-chart .axis { stroke: var(--rule-strong); stroke-width: 1; }
+.pain-chart .axis.dotted { stroke: var(--rule); stroke-dasharray: 2 3; }
+.pain-chart .cut { stroke: var(--danger); stroke-width: 1.5; stroke-dasharray: 5 3; }
+.pain-chart text { fill: var(--ink-2); font: 600 11px var(--font-num); }
+.pain-chart .cut-t { fill: var(--danger); }
+.pain-chart .bar { fill: var(--tone, var(--ink-2)); }
+.pain-chart .bar-val { fill: var(--ink); font-size: 14px; font-weight: 700; }
+
+.pain-log { margin: var(--s-3) 0; padding: 0; list-style: none; }
+.pain-log li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-4);
+  padding: var(--s-2) 0;
+  border-top: 1px solid var(--rule);
+  font-variant-numeric: tabular-nums;
+}
+.pain-log time { min-width: 7.5em; color: var(--ink-2); font: 600 var(--t-sm) / 1.2 var(--font-num); }
+.pain-flag { color: var(--danger); font-weight: 650; }
+.pain-hist-actions { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-3); }
+
+.pain-src { max-width: 52rem; margin: var(--s-6) 0 var(--s-5); color: var(--ink-2); font-size: var(--t-xs); }
+.pain-src summary { display: flex; align-items: center; min-height: 44px; font-weight: 650; cursor: pointer; }
+.pain-src ul { padding-left: 1.2em; }
+.src-name { color: var(--ink); font-weight: 650; }
+.pain-print-head { display: none; }
+
+/* --- impression du suivi de la douleur (onglet Douleur) ---------------------------------------- */
+@media print {
+  body[data-view="pain"] .sheet-head,
+  body[data-view="pain"] .sheet-notes,
+  body[data-view="pain"] main,
+  body[data-view="pain"] .pain-top,
+  body[data-view="pain"] .pain-lead,
+  body[data-view="pain"] .pain-pick,
+  body[data-view="pain"] .pain-step,
+  body[data-view="pain"] .pain-live,
+  body[data-view="pain"] .pain-hist-actions,
+  body[data-view="pain"] .pain-src { display: none !important; }
+  body[data-view="pain"] .pain { display: block !important; max-width: none; padding: 0; }
+  body[data-view="pain"] .pain-hist { margin-top: 0; }
+  body[data-view="pain"] .pain-print-head { display: block; margin-bottom: 5mm; }
+  .pph-clinic { margin: 0 0 2mm; font: 700 11pt / 1.2 var(--font-num); letter-spacing: 0.05em; text-transform: uppercase; }
+  .pph-who { margin: 1mm 0 0; font-size: 10pt; }
+  .pain-fig, .pain-log li { break-inside: avoid; }
+  .pain-chart .bar { fill: #000; }
+  .pain-chart .bar.tone-ok, .pain-chart .bar.tone-info { fill: #555; }
 }
 
 /* panneau d'édition ouvert : la page derrière ne défile pas */

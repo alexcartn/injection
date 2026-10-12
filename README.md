@@ -5,6 +5,8 @@ Reprend le Google Sheet "Injections et perf hospit" : dose (mL) = poids (kg) x c
 
 Un second onglet, « Ordonnance », compose l'ordonnance du patient : pour chaque médicament, il choisit dans le catalogue Med'Vet l'article le mieux adapté selon le poids, la posologie et la durée du traitement, pour avoir le moins de reste possible (comprimés, gélules, liquides buvables, injectables, spot-on choisis selon le poids), donne la phrase à dire au client, puis la copie ou l'imprime.
 
+Un troisième onglet, « Douleur », guide l'évaluation de la douleur aiguë d'un patient hospitalisé ou opéré avec des grilles publiées, calcule les scores en direct et garde le suivi du patient (voir plus bas).
+
 Fichiers statiques uniquement (HTML, CSS, JS, un index JSON), aucun build, aucune dépendance.
 
 ## Utilisation
@@ -51,6 +53,22 @@ Onglet « Ordonnance » sous la barre du poids (le poids et le filtre Chien / Ch
 - Spot-on : pas de posologie, l'article se choisit selon le poids d'après la tranche écrite dans le libellé du produit (« chiens de 10 à 20 kg », « > 4–10 kg », « ≤ 2,5 kg »). L'appli donne l'article dont la tranche contient le poids, avec sa pipette, sa boîte et son GTIN ; si l'on indique l'intervalle entre deux applications (« Modifier ») et la durée, elle compte les pipettes et choisit la boîte qui laisse le moins de reste. Un poids hors de toutes les tranches est signalé, avec la tranche la plus proche. Les spot-on dont le libellé ne donne pas de tranche (Frontline, Fiprotec, Effitix et leurs génériques ne parlent que de « petit », « moyen » ou « grand » chien) ne sont jamais proposés au hasard : ils sont comptés et renvoyés vers la fiche Med'Vet.
 - Recherche : par nom, marque, principe actif, forme ou GTIN de la boîte. Une faute de frappe est tolérée quand rien ne correspond exactement (« meloxodyl » trouve Meloxidyl), sauf sur les chiffres. Les associations de plusieurs substances que l'appli ne sait pas calculer (NexGard Spectra, Milbemax, Drontal, Bravecto, Credelio Plus, Simparica Trio...) sont affichées sans bouton « Ajouter » : le plus souvent un comprimé par tranche de poids, pas une dose en mg/kg. Elles renvoient vers la fiche Med'Vet (la saisie à la main reste possible).
 - Limites : seules les posologies en mg/kg sont gérées pour la voie orale et les injectables (pas les comprimés dosés par tranche de poids comme NexGard, Milbemax ou Drontal, refusés à l'ajout, ni les pâtes, gels et poudres, ni les colliers, vaccins ou aliments), les autres associations sont écartées, et la valeur validée par la clinique fait foi : une posologie proposée par Med'Vet reste « à vérifier » tant qu'elle n'est pas confirmée, et le texte du RCP est celui de Med'Vet, jamais reformulé. L'appli propose, la vétérinaire décide.
+
+## Douleur aiguë : évaluer et suivre
+
+Onglet « Douleur » : on choisit Chien ou Chat avec le filtre d'espèce du haut, on renseigne les items, les scores se calculent à chaque clic (sous chaque étape et dans la barre du bas). Le nom de l'animal est le même que celui des autres onglets.
+
+- Chien : sédation, puis douleur (4AVet).
+- Chat : faciès (Feline Grimace Scale), puis douleur (4AVet). Aucune grille de sédation n'est intégrée pour le chat.
+- Sédation : version abrégée (4 items, 0 à 12) par défaut, grille complète (7 items, 0 à 21) en cochant la case. Aucune classe d'interprétation n'est publiée : l'appli affiche le score seul, avec un rappel que la sédation masque la douleur.
+- Feline Grimace Scale : 5 items notés 0, 1 ou 2, chacun peut être « non évaluable » (le rapport se calcule alors sur les items notés, 3 au minimum : choix de l'appli). Seuil d'analgésie de secours à 0,39 sur 1 (Evangelista et coll., 2019), soit 4 sur 10 avec les 5 items.
+- 4AVet : 6 items notés de 0 à 3, total sur 18. Classes d'intensité : légère de 1 à 5, modérée de 6 à 10, sévère de 11 à 18. Aucun seuil d'analgésie validé pour cette grille : l'appli ne conseille rien, elle signale « Score élevé » à partir de modérée.
+- « Enregistrer l'évaluation » garde les scores (pas les items) dans le stockage de l'appareil, sous le nom de l'animal. Le suivi montre un histogramme par grille et la liste des évaluations. Les évaluations sont effacées après 14 jours, et le bouton « Effacer le suivi » les retire tout de suite. « Imprimer le suivi » sort une page avec les histogrammes et la liste.
+- Comme pour le poids, vider le poids = patient suivant : l'évaluation en cours et le nom sont effacés (le suivi enregistré reste).
+
+À compléter : le texte de chaque niveau de 4AVet (la grille d'origine n'a pas pu être consultée, seuls les noms des items et les extrémités « aucune douleur » et « douleur maximale » sont repris). Les items et libellés sont dans `pain.js` (objet `A4V`), séparés du reste du code : un libellé se renseigne dans `levels` d'un item sans toucher à l'affichage. Les scores sont calculés par des fonctions pures du même fichier.
+
+Cet onglet n'est pas l'APS de CAPdouleur, dont la grille est réservée à ses adhérents : il s'appuie sur les grilles publiées citées dans « Sources et limites » en bas de l'onglet. Outil d'aide : le score ne remplace pas l'examen clinique.
 
 ## Modifier les doses
 
@@ -99,6 +117,7 @@ Le SIMV a donné son accord pour les faits de catalogue, les GTIN, puis pour les
 - Polices : Atkinson Hyperlegible Next et Barlow Condensed, licence SIL OFL 1.1 (dossier `fonts/`).
 - Pictogrammes de section : Lucide, licence ISC (`icons/LICENSE-lucide.txt`).
 - Données produits de l'ordonnance : Med'Vet (SIMV), voir ci-dessus.
+- Grilles de douleur : Feline Grimace Scale (Evangelista et coll., Scientific Reports, 2019), grille de sédation de Grint et coll. d'après Young 1990 et Kuusela 2000 (reprise par Wagner et coll., BMC Veterinary Research, 2017), 4AVet (items d'après Rialland et coll., PLoS One, 2012 ; classes d'intensité d'après Le Point Vétérinaire n° 330, 2012).
 - Clin d'œil caché dans le pied de page (« Made with ♥ pour Dr Matz ») : un toucher sur le cœur fait apparaître un animal tiré au hasard, un second toucher le fait disparaître, et le suivant en montre un autre (jamais deux fois le même d'affilée). Animations Noto Emoji © Google, licence CC BY 4.0, réduites à 160 px et recompressées en WebP animé (`animals/`, détail dans `animals/LICENSE.txt`). Elles sont embarquées : rien n'est chargé depuis Internet, et ça marche hors connexion. Avec « réduire les animations » activé sur l'appareil, un émoji fixe remplace l'animation.
 
 ## Lancer en local

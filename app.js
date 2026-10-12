@@ -9,6 +9,9 @@ import {
   posologyStatus, intakeSentence, supplyParts, supplyPhrase, orderWarnings, orderTotals, normalizeProtocol,
   normalizePrices, boxOf, withPrices, isUnhandledCombo, productLink, parseRcp,
 } from './rx.js';
+import {
+  SCALES, FLOWS, NA, activeItems, maxOf, scoreScale, readScore, buildEntry, pruneHistory, HISTORY_DAYS,
+} from './pain.js';
 
 const STORE_KEY = 'injection:sections:v1';
 const SPECIES_KEY = 'injection:species';
@@ -20,6 +23,7 @@ const RX_KEY = 'injection:rx:v1';
 const RX_PREFS_KEY = 'injection:rx-prefs:v1';
 const RX_PROTOCOLS_KEY = 'injection:rx-protocols:v1';
 const RX_PRICES_KEY = 'injection:rx-prices:v1';
+const PAIN_KEY = 'injection:pain:v1';
 const ROUND_STEPS = [0, 0.01, 0.05, 0.1];
 const DRIP_SETS = [20, 60];
 // Un arrondi qui change la dose de plus de 10 % est refusé : la valeur exacte est gardée.
@@ -172,8 +176,16 @@ function loadRxPrefs() {
   return normalizePrefs();
 }
 
+// Douleur aiguë : les évaluations enregistrées des 14 derniers jours, pour suivre l'évolution d'un patient hospitalisé.
+function loadPainHistory() {
+  try {
+    return pruneHistory(JSON.parse(storeGet(PAIN_KEY) || '[]'));
+  } catch { /* historique corrompu : on repart de zéro */ }
+  return [];
+}
+
 const state = {
-  view: 'doses', // 'doses' ou 'rx' ; on rouvre toujours sur les doses
+  view: 'doses', // 'doses', 'rx' ou 'pain' ; on rouvre toujours sur les doses
   rx: {
     drugs: loadRx(), // la bibliothèque : tous les médicaments de la clinique
     prefs: loadRxPrefs(),
@@ -181,6 +193,12 @@ const state = {
     prices: loadRxPrices(),
     days: null, // durée par défaut du traitement : propre au patient en cours, jamais mémorisée
     order: [], // l'ordonnance du patient en cours : { drug, days } (days vide = durée par défaut), jamais mémorisée
+  },
+  pain: {
+    answers: {}, // { fgs: { ears: 1, ... }, sed: {...}, a4v: {...} } : l'évaluation en cours, jamais mémorisée
+    full: false, // sédation : grille complète (7 items) au lieu de la version abrégée (4 items)
+    lastSaved: null,
+    history: loadPainHistory(),
   },
   sections: loadSections(),
   species: loadSpecies(),
@@ -199,6 +217,7 @@ const saveRxPrefs = () => storeSet(RX_PREFS_KEY, JSON.stringify(state.rx.prefs))
 const saveRxProtocols = () => storeSet(RX_PROTOCOLS_KEY, JSON.stringify(state.rx.protocols));
 const saveRxPrices = () => storeSet(RX_PRICES_KEY, JSON.stringify(state.rx.prices));
 const savePrefs = () => storeSet(PREFS_KEY, JSON.stringify(state.prefs));
+const savePain = () => storeSet(PAIN_KEY, JSON.stringify(state.pain.history));
 
 // --- utilitaires ------------------------------------------------------------
 
@@ -685,6 +704,7 @@ function updateWeight() {
     petInput.value = '';
     notesInput.value = '';
     if (rxNameInput) rxNameInput.value = '';
+    if (painNameInput) painNameInput.value = '';
   }
   printBtn.disabled = !state.weight;
   printNote.textContent = state.weight
@@ -703,6 +723,8 @@ function updateWeight() {
     state.rx.order = [];
     rxCards.clear();
     syncRxDays?.();
+    state.pain.answers = {};
+    state.pain.lastSaved = null;
   }
 
   renderCurrent();
@@ -788,13 +810,18 @@ function fillSheet() {
 }
 
 const pageTitle = document.title;
-// Ctrl+P compris : l'onglet Ordonnance imprime l'ordonnance, l'autre la fiche d'hospitalisation
-window.addEventListener('beforeprint', () => (state.view === 'rx' ? fillRxSheet() : fillSheet()));
+// Ctrl+P compris : l'onglet Ordonnance imprime l'ordonnance, Douleur le suivi, Injections la fiche d'hospitalisation
+window.addEventListener('beforeprint', () => {
+  if (state.view === 'rx') fillRxSheet();
+  else if (state.view === 'pain') fillPainSheet();
+  else fillSheet();
+});
 window.addEventListener('afterprint', () => { document.title = pageTitle; });
 
 petInput.addEventListener('input', () => {
   state.petName = petInput.value.trim();
   if (rxNameInput) rxNameInput.value = petInput.value;
+  if (painNameInput) painNameInput.value = petInput.value;
 });
 notesInput.addEventListener('input', () => { state.petNotes = notesInput.value.trimEnd(); });
 printBtn.addEventListener('click', () => { fillSheet(); window.print(); });
@@ -820,7 +847,7 @@ roundSelect.addEventListener('change', () => {
 
 const rxRoot = document.getElementById('rx');
 const pageHeading = document.querySelector('h1');
-const HEADINGS = { doses: pageHeading.textContent, rx: 'Ordonnance du patient' };
+const HEADINGS = { doses: pageHeading.textContent, rx: 'Ordonnance du patient', pain: 'Douleur aiguë' };
 const DAY_CHOICES = [3, 5, 7, 10, 14, 21, 30];
 const SPLIT_CHOICES = [['none', 'Pas coupé'], ['half', 'Moitiés'], ['quarter', 'Quarts']];
 const eur = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' });
@@ -2302,15 +2329,308 @@ function renderRx() {
   renderRecap();
 }
 
+// --- douleur aiguë : grilles publiées, score en direct, suivi par patient ------------------------
+
+const painRoot = document.getElementById('pain');
+const PAIN_SHOWN = 12; // évaluations tracées dans le suivi
+const fmtRatio = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+let painNameInput;
+let painSteps = []; // { scale, result } de chaque étape affichée
+let painLiveEl;
+let painHistEl;
+let painSaveBtn;
+let painSaveNote;
+let painPrintHead;
+
+const painSpecies = () => (state.species === 'CN' || state.species === 'CT' ? state.species : null);
+const fmtStamp = (t) => new Date(t).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const fmtClock = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+function svgEl(tag, attrs = {}, ...children) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) if (value != null) node.setAttribute(key, value);
+  node.append(...children);
+  return node;
+}
+
+function painItem(scale, item) {
+  const answers = (state.pain.answers[scale.id] ??= {});
+  const name = `pain-${scale.id}-${item.id}`;
+  const levels = scale.naAllowed ? [...item.levels, { value: NA, label: 'Non évaluable' }] : item.levels;
+  const choices = levels.map((level) => {
+    const input = el('input', { type: 'radio', name, value: String(level.value), checked: answers[item.id] === level.value });
+    input.addEventListener('change', () => {
+      answers[item.id] = level.value;
+      state.pain.lastSaved = null;
+      refreshPain();
+    });
+    return el('label', { class: 'lv' },
+      input,
+      el('span', { class: 'lv-n' }, level.value === NA ? '–' : String(level.value)),
+      level.label ? el('span', { class: 'lv-t' }, level.label) : null,
+    );
+  });
+  return el('fieldset', { class: `pain-item${scale.compact ? ' compact' : ''}` },
+    el('legend', {}, item.label),
+    item.hint ? el('p', { class: 'pain-hint' }, item.hint) : null,
+    el('div', { class: 'lvs' }, choices),
+  );
+}
+
+function painStep(scale, index) {
+  const result = el('p', { class: 'pain-result' });
+  painSteps.push({ scale, result });
+
+  let extra = null;
+  if (scale.id === 'sed') {
+    const full = el('input', { type: 'checkbox', id: 'pain-full', checked: state.pain.full });
+    full.addEventListener('change', () => {
+      state.pain.full = full.checked;
+      renderPain();
+      document.getElementById('pain-full')?.focus();
+    });
+    extra = el('label', { class: 'pain-opt' }, full, el('span', {}, 'Grille complète (7 items) au lieu de la version abrégée (4 items)'));
+  } else if (scale.id === 'a4v') {
+    extra = el('p', { class: 'pain-hint' }, 'Chaque item va de 0 (aucune douleur) à 3 (douleur maximale). Le détail de chaque niveau n’est pas repris ici.');
+  }
+
+  return el('section', { class: 'pain-step', 'aria-labelledby': `pain-h-${scale.id}` },
+    el('h3', { class: 'rx-sub', id: `pain-h-${scale.id}` }, `${index + 1} · ${scale.title}`),
+    extra,
+    el('div', { class: 'pain-items' }, activeItems(scale, state.pain.full).map((item) => painItem(scale, item))),
+    result,
+  );
+}
+
+function renderPain() {
+  const species = painSpecies();
+  painSteps = [];
+  painLiveEl = painHistEl = painSaveBtn = painSaveNote = null;
+
+  painNameInput = el('input', { id: 'pain-pet', class: 'text', type: 'text', autocomplete: 'off', maxlength: 60, placeholder: 'Nécessaire pour le suivi', value: state.petName });
+  painNameInput.addEventListener('input', () => {
+    state.petName = painNameInput.value.trim();
+    petInput.value = painNameInput.value;
+    if (rxNameInput) rxNameInput.value = painNameInput.value;
+    refreshPain();
+  });
+
+  painPrintHead = el('header', { class: 'pain-print-head' },
+    el('p', { class: 'pph-clinic' }, 'Natura’Vet · Vétérinaire à Mourmelon-le-Grand'),
+    el('h2', { class: 'sh-title' }, 'Suivi de la douleur aiguë'),
+    el('p', { class: 'pph-who' }),
+  );
+
+  const children = [
+    painPrintHead,
+    el('div', { class: 'rx-top pain-top' }, field('Nom de l’animal', painNameInput, 'rx-patient')),
+    el('p', { class: 'pain-lead' }, 'Scorer, agir, réévaluer : à l’admission, après un geste douloureux, à intervalles réguliers et avant la sortie.'),
+  ];
+
+  if (!species) {
+    const pick = (value) => document.querySelector(`input[name="species"][value="${value}"]`).click();
+    children.push(el('div', { class: 'pain-pick' },
+      el('p', {}, 'Les grilles diffèrent selon l’espèce. Chien ou chat ?'),
+      el('div', { class: 'pain-pick-btns' }, button('Chien', () => pick('CN'), 'btn-primary'), button('Chat', () => pick('CT'), 'btn-primary')),
+    ));
+  } else {
+    FLOWS[species].forEach((id, i) => children.push(painStep(SCALES[id], i)));
+
+    painSaveBtn = button('Enregistrer l’évaluation', savePainEntry, 'btn-primary');
+    painSaveNote = el('span', { class: 'pain-note' });
+    painLiveEl = el('div', { class: 'pain-live', 'aria-live': 'polite' },
+      el('div', { class: 'pl-parts' }),
+      el('div', { class: 'pl-actions' }, painSaveBtn, button('Nouvelle évaluation', newPainEvaluation), painSaveNote),
+    );
+    painHistEl = el('section', { class: 'pain-hist', 'aria-label': 'Suivi du patient' });
+    children.push(painLiveEl, painHistEl, painSources(species));
+  }
+
+  painRoot.replaceChildren(...children);
+  refreshPain();
+}
+
+// Scores en direct (sous chaque étape et dans la barre du bas), état du bouton d'enregistrement, suivi.
+function refreshPain() {
+  const species = painSpecies();
+  if (!species || !painLiveEl) return;
+
+  let anyComplete = false;
+  const parts = [];
+  for (const { scale, result } of painSteps) {
+    const score = scoreScale(scale, state.pain.answers[scale.id], { full: state.pain.full });
+    const read = readScore(scale, score);
+    anyComplete ||= score.complete;
+    const total = score.complete ? `${score.sum} / ${score.max}` : `${score.answered} / ${score.count} items`;
+    const tone = read?.tone ?? 'none';
+
+    let note = read?.text ?? '';
+    if (read && scale.id === 'fgs') note += ` (${fmtRatio.format(score.ratio)} sur 1 ; seuil ${fmtRatio.format(scale.cutoff)})`;
+    if (!read && score.answered === score.count) note = `Au moins ${scale.minScored} items à évaluer.`;
+
+    result.className = `pain-result tone-${tone}`;
+    result.replaceChildren(...[el('span', { class: 'pain-score' }, total), note && el('span', { class: 'pain-read' }, note)].filter(Boolean));
+    parts.push(el('span', { class: `pl-part tone-${tone}` }, el('span', { class: 'pl-name' }, scale.short), el('span', { class: 'pl-val' }, total)));
+  }
+  painLiveEl.firstChild.replaceChildren(...parts);
+
+  const canSave = anyComplete && Boolean(state.petName);
+  painSaveBtn.disabled = !canSave;
+  painSaveNote.textContent = state.pain.lastSaved
+    ? `Évaluation enregistrée à ${fmtClock(state.pain.lastSaved)}.`
+    : !state.petName ? 'Saisissez le nom de l’animal pour enregistrer.'
+    : !anyComplete ? 'Complétez au moins une grille pour enregistrer.' : '';
+
+  renderPainHistory();
+}
+
+function newPainEvaluation() {
+  state.pain.answers = {};
+  state.pain.lastSaved = null;
+  renderPain();
+  window.scrollTo({ top: 0 });
+}
+
+function savePainEntry() {
+  const species = painSpecies();
+  const entry = species && state.petName
+    ? buildEntry({ name: state.petName, species, answers: state.pain.answers, full: state.pain.full })
+    : null;
+  if (!entry) return;
+  state.pain.history = pruneHistory([...state.pain.history, entry]);
+  savePain();
+  state.pain.answers = {};
+  state.pain.lastSaved = entry.t;
+  renderPain();
+  painHistEl.scrollIntoView({ block: 'nearest', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
+}
+
+function painSources(species) {
+  const ids = FLOWS[species];
+  return el('details', { class: 'pain-src' },
+    el('summary', {}, 'Sources et limites'),
+    el('ul', {}, ids.map((id) => el('li', {}, el('span', { class: 'src-name' }, SCALES[id].title), ' : ', SCALES[id].source))),
+    el('p', {}, 'Un animal anxieux, sédaté ou porteur de comorbidités peut montrer moins ou plus de signes qu’il n’en ressent. Chez les brachycéphales, le faciès est plus difficile à interpréter.'),
+    species === 'CT' ? el('p', {}, 'Aucune grille de sédation n’est intégrée pour le chat : noter l’état de sédation à part, car il peut masquer la douleur.') : null,
+    el('p', {}, `Les évaluations enregistrées restent sur cet appareil et sont effacées après ${HISTORY_DAYS} jours. Outil d’aide : le score ne remplace pas l’examen clinique.`),
+  );
+}
+
+// --- suivi : histogramme par grille et liste des évaluations ---------------------------------------
+
+function painTone(scale, v) {
+  const f = v.max ? v.sum / v.max : 0;
+  if (scale.id === 'fgs') return f >= scale.cutoff ? 'alert' : 'ok';
+  if (scale.id === 'a4v') return scale.bands.find((b) => v.sum <= b.to).tone;
+  return 'info';
+}
+
+function painChart(scale, points) {
+  const left = 30, step = 46, bw = 30, top = 20, H = 164, bottom = 36;
+  const W = left + points.length * step + 12;
+  const plotH = H - top - bottom;
+  const y = (f) => top + plotH * (1 - f);
+  const last = points[points.length - 1][scale.id];
+  const topMax = activeItems(scale, scale.id === 'sed' && last.full).reduce((n, item) => n + maxOf(item), 0);
+
+  const svg = svgEl('svg', { class: 'pain-chart', viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img',
+    'aria-label': `${scale.short} : ${points.map((e) => `${e[scale.id].sum} sur ${e[scale.id].max} à ${fmtClock(e.t)}`).join(', ')}` });
+  svg.append(
+    svgEl('line', { class: 'axis', x1: left, x2: W - 4, y1: y(0), y2: y(0) }),
+    svgEl('line', { class: 'axis dotted', x1: left, x2: W - 4, y1: y(1), y2: y(1) }),
+    svgEl('text', { class: 'tick', x: left - 5, y: y(0) + 4, 'text-anchor': 'end' }, '0'),
+    svgEl('text', { class: 'tick', x: left - 5, y: y(1) + 4, 'text-anchor': 'end' }, String(topMax)),
+  );
+  if (scale.id === 'fgs') {
+    svg.append(
+      svgEl('line', { class: 'cut', x1: left, x2: W - 4, y1: y(scale.cutoff), y2: y(scale.cutoff) }),
+      svgEl('text', { class: 'tick cut-t', x: W - 4, y: y(scale.cutoff) - 3, 'text-anchor': 'end' }, 'seuil'),
+    );
+  }
+  let prevDay = '';
+  points.forEach((e, i) => {
+    const v = e[scale.id];
+    const f = v.max ? v.sum / v.max : 0;
+    const x = left + 10 + i * step;
+    const h = Math.max(2, plotH * f);
+    const day = new Date(e.t).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+    svg.append(
+      svgEl('rect', { class: `bar tone-${painTone(scale, v)}`, x, y: y(0) - h, width: bw, height: h }),
+      svgEl('text', { class: 'bar-val', x: x + bw / 2, y: y(0) - h - 4, 'text-anchor': 'middle' }, String(v.sum)),
+      svgEl('text', { class: 'tick', x: x + bw / 2, y: H - 20, 'text-anchor': 'middle' }, fmtClock(e.t)),
+    );
+    if (day !== prevDay) svg.append(svgEl('text', { class: 'tick day', x: x + bw / 2, y: H - 7, 'text-anchor': 'middle' }, day));
+    prevDay = day;
+  });
+  return svg;
+}
+
+function renderPainHistory() {
+  const species = painSpecies();
+  if (!painHistEl || !species) return;
+  const name = state.petName;
+  const head = el('h3', { class: 'rx-sub' }, 'Suivi', name ? ` de ${name}` : '');
+
+  if (!name) {
+    painHistEl.replaceChildren(head, el('p', { class: 'pain-empty' }, 'Saisissez le nom de l’animal pour enregistrer ses évaluations et suivre leur évolution.'));
+    return;
+  }
+  const mine = state.pain.history
+    .filter((e) => e.species === species && fold(e.name) === fold(name))
+    .slice(-PAIN_SHOWN);
+  if (!mine.length) {
+    painHistEl.replaceChildren(head, el('p', { class: 'pain-empty' }, `Aucune évaluation enregistrée pour ${name}.`));
+    return;
+  }
+
+  const charts = FLOWS[species]
+    .filter((id) => mine.some((e) => e[id]))
+    .map((id) => el('figure', { class: 'pain-fig' },
+      el('figcaption', {}, SCALES[id].short),
+      el('div', { class: 'pain-chart-wrap' }, painChart(SCALES[id], mine.filter((e) => e[id]))),
+    ));
+
+  const label = (id, v) => `${SCALES[id].short} ${v.sum}/${v.max}`;
+  const log = el('ul', { class: 'pain-log' }, [...mine].reverse().map((e) =>
+    el('li', {},
+      el('time', { datetime: new Date(e.t).toISOString() }, fmtStamp(e.t)),
+      el('span', { class: 'pl-line' }, FLOWS[species].filter((id) => e[id]).map((id) => label(id, e[id])).join(' · ')),
+      e.alert ? el('span', { class: 'pain-flag' }, 'Score élevé') : null,
+    )));
+
+  const clear = button(`Effacer le suivi de ${name}`, () => {
+    if (!confirm(`Effacer les évaluations enregistrées pour « ${name} » ?`)) return;
+    state.pain.history = state.pain.history.filter((e) => !(e.species === species && fold(e.name) === fold(name)));
+    savePain();
+    renderPainHistory();
+  }, 'btn-danger btn-small');
+  const print = button('Imprimer le suivi', () => { fillPainSheet(); window.print(); }, 'btn-small');
+
+  painHistEl.replaceChildren(head, el('div', { class: 'pain-charts' }, charts), log, el('div', { class: 'pain-hist-actions' }, print, clear));
+}
+
+// En-tête de l'impression et nom de fichier proposé pour un PDF. Appelé juste avant l'impression, Ctrl+P compris.
+function fillPainSheet() {
+  const now = new Date();
+  if (painPrintHead) {
+    painPrintHead.querySelector('.pph-who').textContent =
+      `${state.petName || 'Patient'} · ${speciesText()} · ${now.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' })}`;
+  }
+  const stamp = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  document.title = `Douleur ${state.petName || 'patient'} ${stamp}`;
+}
+
 // --- passage d'une vue à l'autre ---------------------------------------------------------------
 
 function setView(view) {
   state.view = view;
   document.body.dataset.view = view;
-  main.hidden = view === 'rx';
+  main.hidden = view !== 'doses';
   rxRoot.hidden = view !== 'rx';
+  painRoot.hidden = view !== 'pain';
   pageHeading.textContent = HEADINGS[view];
   if (view === 'rx') renderRx();
+  else if (view === 'pain') renderPain();
   else render();
   window.scrollTo({ top: 0 });
 }
@@ -2348,6 +2668,7 @@ editToggle.addEventListener('click', () => setEditing(!state.editing));
 
 function renderCurrent() {
   if (state.view === 'rx') renderRx();
+  else if (state.view === 'pain') renderPain();
   else if (!state.editing) renderView();
 }
 

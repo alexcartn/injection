@@ -87,6 +87,7 @@
       <legend class="sr-only">Affichage</legend>
       <label><input type="radio" name="view" value="doses" checked><span>Injections</span></label>
       <label><input type="radio" name="view" value="rx"><span>Ordonnance</span></label>
+      <label><input type="radio" name="view" value="pain"><span>Douleur</span></label>
     </fieldset>
   </div>
 
@@ -167,6 +168,9 @@
 
   <!-- Ordonnance : construit par app.js -->
   <section class="rx" id="rx" aria-label="Ordonnance" hidden></section>
+
+  <!-- Douleur aiguë : construit par app.js -->
+  <section class="pain" id="pain" aria-label="Douleur aiguë" hidden></section>
 
   <nav class="dock" id="dock" aria-label="Aller à une section" hidden></nav>
 
