@@ -1462,6 +1462,64 @@ body[data-view="pain"] > .prefs { display: none; }
 .rx-suggest[hidden],
 .rx-rcp[hidden] { display: none; }
 
+/* doses lues dans le RCP : une ligne par dose, la phrase d'origine dessous */
+.rx-doses {
+  margin: 0 0 var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--r);
+  background: var(--paper-2);
+}
+.rx-doses[hidden] { display: none; }
+.rx-doses > summary,
+.rx-dose-rest > summary { display: flex; align-items: center; min-height: 44px; font-weight: 650; cursor: pointer; }
+.rx-doses-body > .btn { margin-top: var(--s-2); }
+.rx-dose-list { margin: var(--s-2) 0 0; padding: 0; list-style: none; display: grid; gap: var(--s-2); }
+.rx-dose {
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--paper);
+}
+.rx-dose.off { opacity: 0.8; }
+.rx-dose-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-3); }
+.rx-dose-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-2);
+  margin: 0;
+  font: 700 var(--t-md) / 1.2 var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+.rx-dose-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.rx-dose-btn:disabled { opacity: 0.45; cursor: default; }
+.rx-dose-meta { margin: var(--s-1) 0 0; color: var(--ink-2); font-size: var(--t-xs); }
+.rx-dose-tags { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-2); margin: var(--s-1) 0 0; padding: 0; list-style: none; }
+.rx-dose-tags li {
+  padding: 2px var(--s-2);
+  border-radius: var(--r);
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.rx-dose-tags li.ok { background: var(--accent-wash); color: var(--accent); }
+.rx-dose-tags li.stop { background: transparent; color: var(--danger); box-shadow: inset 0 0 0 1px currentColor; }
+.rx-dose-quote {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-3);
+  border-left: 2px solid var(--rule);
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+  line-height: 1.4;
+}
+
 /* texte de la rubrique « Posologie » du RCP : replié, lisible, défilant */
 .rx-rcp { margin-top: var(--s-2); }
 .rx-rcp > summary {

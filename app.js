@@ -12,6 +12,7 @@ import {
 import {
   SCALES, FLOWS, PAIN_SPECIES, NA, activeItems, maxOf, scoreScale, readScore, buildEntry, pruneHistory, HISTORY_DAYS,
 } from './pain.js';
+import { readDoses, groupDoses, TAG_LABEL } from './doses.js';
 
 const STORE_KEY = 'injection:sections:v1';
 const SPECIES_KEY = 'injection:species';
@@ -1364,6 +1365,84 @@ function rcpContent(target, entry) {
   ];
 }
 
+// --- doses lues dans le RCP : la vétérinaire touche celle à appliquer ----------------------------------
+
+// Les doses en mg/kg des fiches de la substance (toutes les marques de l'article choisi : espèce du patient, marque
+// éventuelle), regroupées quand plusieurs fiches disent la même chose. Rien n'est appliqué sans un toucher.
+async function doseGroupsFor(drug) {
+  const species = state.species !== 'all' ? state.species : drug.species;
+  const assoc = Boolean(drug.substance?.includes('+'));
+  const byLink = new Map();
+  for (const f of candidatesFor(drug).formats ?? []) if (f.link && !byLink.has(f.link)) byLink.set(f.link, f);
+  if (!byLink.size && drug.link) byLink.set(drug.link, { link: drug.link, brand: drug.name });
+  if (!byLink.size) return { groups: [], fiches: 0 };
+
+  const data = await loadRxPoso();
+  const sources = [];
+  for (const f of byLink.values()) {
+    const doses = rcpTexts(data.p[posoKey(f.link)], species).flatMap((t) =>
+      readDoses(t.text, { species: t.species ?? species, assoc, strength: f.mg || undefined, conc: f.conc || undefined }));
+    if (doses.length) sources.push({ name: f.brand ?? f.name, link: f.link, doses });
+  }
+  return { groups: groupDoses(sources), fiches: byLink.size, read: sources.length };
+}
+
+// « 0,25 mg/kg par prise, 2 prises par jour » : la dose telle que l'ordonnance la comprend
+function doseLabel(g, drug) {
+  const range = g.max ? `${fmtMg.format(g.min)} – ${fmtMg.format(g.max)}` : fmtMg.format(g.min);
+  const unit = g.assoc || drug.substance?.includes('+') ? 'mg/kg d’association' : 'mg/kg';
+  const what = intakeName(drug);
+  if (g.basis === 'day') return `${range} ${unit} par jour${g.perDay ? `, en ${countText(g.perDay, what)}` : ' · prises à préciser'}`;
+  return `${range} ${unit} par ${what}${g.perDay ? `, ${countText(g.perDay, what)} par jour` : ' · prises par jour à préciser'}`;
+}
+
+// Le médicament porte déjà cette dose (elle est donc « appliquée »).
+const doseApplied = (drug, g) => drug.min === g.min && drug.max === g.max && drug.basis === g.basis && (g.perDay == null || drug.perDay === g.perDay);
+
+function applyDose(drug, g) {
+  drug.min = g.min;
+  drug.max = g.max;
+  drug.basis = g.basis;
+  if (g.perDay) drug.perDay = g.perDay; // sinon on garde les prises déjà choisies, s'il y en a
+  if (!drug.species && state.species === 'all' && g.species) drug.species = g.species; // dose propre à une espèce
+  drug.suggested = true; // choisie dans le RCP, donc à confirmer comme une posologie proposée
+  drug.validated = undefined;
+  if (g.tags.includes('single')) { const line = orderLine(drug); if (line) line.days = 1; }
+  saveRx();
+  refreshDrug(drug);
+  if (!drug.perDay) openRxEditor(drug); // prises par jour à choisir
+}
+
+const DOSES_SHOWN = 5;
+
+function doseRow(drug, g, species) {
+  const asked = species ?? g.species; // sans espèce de patient, on étiquette la dose
+  const meta = [
+    g.names.slice(0, 3).join(', ') + (g.names.length > 3 ? ` +${g.names.length - 3}` : ''),
+    countText(g.names.length, 'fiche'),
+  ].join(' · ');
+  const apply = el('button', {
+    type: 'button',
+    class: 'btn btn-small rx-dose-btn',
+    disabled: !g.tap,
+    'aria-pressed': String(doseApplied(drug, g)),
+    onclick: () => applyDose(drug, g),
+  }, doseApplied(drug, g) ? 'Appliquée' : 'Appliquer');
+  return {
+    node: el('li', { class: `rx-dose${g.tap ? '' : ' off'}` },
+      el('div', { class: 'rx-dose-head' },
+        el('p', { class: 'rx-dose-main' }, doseLabel(g, drug), !species && asked && el('span', { class: `chip chip-${asked}` }, SPECIES_LABEL[asked])),
+        apply,
+      ),
+      el('p', { class: 'rx-dose-meta' }, meta),
+      g.tags.length > 0 && el('ul', { class: 'rx-dose-tags' }, g.tags.map((t) => el('li', { class: t === 'confirmed' ? 'ok' : t === 'rhythm' || t === 'max' ? 'stop' : '' }, TAG_LABEL[t]))),
+      el('blockquote', { class: 'rx-dose-quote', title: g.sentence }, g.sentence),
+    ),
+    apply,
+    group: g,
+  };
+}
+
 // --- une ligne d'ordonnance par médicament : le résultat se redessine, le reste suit ------------
 
 // Une ligne d'ordonnance : nom, posologie, résultat à lire d'un coup d'œil, détails repliés.
@@ -1387,6 +1466,8 @@ function rxCard(drug) {
   const rcpBody = el('div', { class: 'rx-rcp-body' });
   const rcp = el('details', { class: 'rx-rcp', hidden: true }, rcpSummary, rcpBody);
   const more = el('details', { class: 'rx-more', hidden: true }, el('summary', {}, 'Détails de l’article et alternatives'), moreBody, rcp);
+  const dosesBody = el('div', { class: 'rx-doses-body' });
+  const doses = el('details', { class: 'rx-doses', hidden: true }, el('summary', {}, 'Doses lues dans le RCP'), dosesBody);
 
   // durée propre à cette ligne ; vide = la durée par défaut (affichée en grisé)
   const daysInput = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: 3, 'aria-label': 'Durée de cette ligne, en jours' });
@@ -1413,7 +1494,7 @@ function rxCard(drug) {
         button('Retirer', () => removeFromOrder(drug), 'btn-ghost btn-small'),
       ),
     ),
-    poso, status, suggest, warns, daysRow, result, more,
+    poso, status, suggest, doses, warns, daysRow, result, more,
   );
 
   // L'extrait ne se charge qu'à l'ouverture, puis reste ouvert quand le résultat se redessine.
@@ -1444,6 +1525,56 @@ function rxCard(drug) {
     fillRcp();
   });
 
+  // Doses lues dans le RCP : ouvertes tant qu'il n'y a pas de posologie, repliées quand elle est à confirmer.
+  let dosesKey = '';
+  let doseRows = [];
+  const syncDoses = () => {
+    for (const row of doseRows) {
+      const on = doseApplied(drug, row.group);
+      row.apply.setAttribute('aria-pressed', String(on));
+      row.apply.textContent = on ? 'Appliquée' : 'Appliquer';
+    }
+  };
+  const fillDoses = (st) => {
+    const show = drug.route !== 'spot' && (st === 'missing' || st === 'suggested') && Boolean(drug.substance || drug.link);
+    doses.hidden = !show;
+    if (!show) { dosesKey = ''; return; }
+    if (st === 'missing' && !doses.dataset.seen) doses.open = true;
+    doses.dataset.seen = '1';
+    const c = candidatesFor(drug);
+    const species = state.species !== 'all' ? state.species : drug.species;
+    const key = JSON.stringify([c.loading ?? false, (c.formats ?? []).map((f) => f.link), drug.link, species, drug.substance]);
+    if (key === dosesKey) { syncDoses(); return; }
+    dosesKey = key;
+    if (c.loading) { dosesBody.replaceChildren(el('p', { class: 'rx-hint' }, 'Chargement du catalogue…')); return; }
+    dosesBody.replaceChildren(el('p', { class: 'rx-hint' }, 'Lecture du RCP…'));
+    doseGroupsFor(drug)
+      .then(({ groups, fiches, read }) => {
+        if (dosesKey !== key) return;
+        if (!groups.length) {
+          dosesBody.replaceChildren(el('p', { class: 'rx-hint' }, 'Aucune dose en mg/kg lisible dans le RCP : à saisir avec le texte sous les yeux.'),
+            button('Lire le RCP', () => { more.open = true; rcp.open = true; rcp.scrollIntoView({ block: 'nearest' }); }, 'btn-small'));
+          doseRows = [];
+          return;
+        }
+        doseRows = groups.map((g) => doseRow(drug, g, species));
+        const visible = doseRows.slice(0, DOSES_SHOWN);
+        const rest = doseRows.slice(DOSES_SHOWN);
+        dosesBody.replaceChildren(
+          el('p', { class: 'rx-hint' }, `Doses trouvées dans ${countText(read, 'fiche')} sur ${fiches} : touchez celle à appliquer. Elle reste à vérifier, le RCP fait foi.`),
+          el('ul', { class: 'rx-dose-list' }, visible.map((r) => r.node)),
+          rest.length > 0 && el('details', { class: 'rx-dose-rest' }, el('summary', {}, `Autres doses lues (${rest.length})`), el('ul', { class: 'rx-dose-list' }, rest.map((r) => r.node))),
+          button('Lire le RCP', () => { more.open = true; rcp.open = true; rcp.scrollIntoView({ block: 'nearest' }); }, 'btn-small btn-ghost'),
+        );
+      })
+      .catch(() => {
+        if (dosesKey !== key) return;
+        dosesKey = '';
+        doseRows = [];
+        dosesBody.replaceChildren(el('p', { class: 'rx-hint' }, 'Le texte du RCP n’est pas disponible pour le moment (hors connexion ?).'));
+      });
+  };
+
   const card = { root, refresh: null, info: null };
   const refresh = (opts) => {
     const days = lineDays(drug);
@@ -1464,6 +1595,7 @@ function rxCard(drug) {
     // posologie : proposée par Med'Vet (à confirmer) ou validée par la clinique, avec sa date
     const st = posologyStatus(drug);
     suggest.hidden = st !== 'suggested';
+    fillDoses(st);
     status.hidden = st !== 'validated';
     status.textContent = st === 'validated' ? `Posologie validée par la clinique${drug.validated ? ` le ${dateFr(drug.validated)}` : ''}` : '';
 
@@ -1842,14 +1974,18 @@ function addDrugFromProduct(product, pack) {
       ? `« ${drug.name} » ajouté : l’article se choisit selon le poids.`
       : drug.suggested
         ? `« ${drug.name} » ajouté avec la posologie proposée par Med’Vet : à vérifier.`
-        : `« ${drug.name} » ajouté : renseignez maintenant sa posologie.`;
+        : `« ${drug.name} » ajouté : choisissez sa dose parmi celles du RCP, ou renseignez-la.`;
   }
   saveRx();
   addToOrder(drug);
   closeRxPanels();
   renderRx();
   scrollToCard(drug);
-  if (posologyStatus(drug) === 'missing') openRxEditor(drug);
+  // des doses lisibles dans le RCP s'offrent dans la ligne ; sans aucune, le panneau d'édition s'ouvre pour la saisir
+  if (posologyStatus(drug) === 'missing') {
+    const none = () => { if (posologyStatus(drug) === 'missing' && state.view === 'rx') openRxEditor(drug); };
+    doseGroupsFor(drug).then(({ groups }) => { if (!groups.some((g) => g.tap)) none(); }).catch(none);
+  }
   return `${text} Il est sur l’ordonnance.`;
 }
 
